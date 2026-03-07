@@ -1,0 +1,4 @@
+node_modules/
+/dist
+/.vscode-test-web
+/vscode-git-submodule-cloner-*.vsix

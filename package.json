@@ -1,0 +1,66 @@
+{
+  "name": "vscode-git-submodule-cloner",
+  "private": "true",
+  "version": "0.0.1",
+  "license": "MIT",
+  "repository": "https://github.com/qbane/vscode-git-submodule-cloner",
+  "displayName": "Submodule cloner",
+  "publisher": "qbane",
+  "description": "The long missing submodule cloner powered by isomorphic-git",
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "submodules",
+    "isomorphic-git"
+  ],
+  "main": "dist/desktop/extension.js",
+  "browser": "dist/web/extension.js",
+  "types": "src/types.d.ts",
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22 <25"
+  },
+  "files": [
+    "LICENSE",
+    "CHANGELOG.md",
+    "dist/"
+  ],
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "isomorphic-git": "^1.37.2",
+    "patch-package": "^8.0.1",
+    "path-browserify": "^1.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.15",
+    "@types/path-browserify": "^1.0.3",
+    "@types/vscode": "~1.90.0",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "postinstall": "patch-package",
+    "vscode:prepublish": "npm run compile",
+    "tsc": "tsc --noEmit",
+    "build": "node bin/esbuild.mjs",
+    "compile": "npm run tsc && npm run build"
+  },
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "category": "Git submodule cloner",
+        "title": "Initialize submodules only (WIP)",
+        "command": "git-submodule-cloner.init-submodules",
+        "enablement": "false"
+      },
+      {
+        "category": "Git submodule cloner",
+        "title": "Initialize and checkout submodules",
+        "command": "git-submodule-cloner.checkout-submodules"
+      }
+    ]
+  }
+}

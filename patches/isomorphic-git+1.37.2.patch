@@ -1,0 +1,91 @@
+diff --git a/node_modules/isomorphic-git/managers/index.d.ts b/node_modules/isomorphic-git/managers/index.d.ts
+index 5e1d4d8..8eb1ac9 100644
+--- a/node_modules/isomorphic-git/managers/index.d.ts
++++ b/node_modules/isomorphic-git/managers/index.d.ts
+@@ -253,14 +253,15 @@ export type CallbackFsClient = {
+      * - https://nodejs.org/api/fs.html#fs_fs_lstat_path_options_callback
+      */
+     lstat: Function;
++    // PATCH: readlink and symlink are required members according to src/models/FileSystem.js
+     /**
+      * - https://nodejs.org/api/fs.html#fs_fs_readlink_path_options_callback
+      */
+-    readlink?: Function | undefined;
++    readlink: Function | undefined;
+     /**
+      * - https://nodejs.org/api/fs.html#fs_fs_symlink_target_path_type_callback
+      */
+-    symlink?: Function | undefined;
++    symlink: Function | undefined;
+     /**
+      * - https://nodejs.org/api/fs.html#fs_fs_chmod_path_mode_callback
+      */
+@@ -276,8 +277,9 @@ export type PromiseFsClient = {
+         rmdir: Function;
+         stat: Function;
+         lstat: Function;
+-        readlink?: Function | undefined;
+-        symlink?: Function | undefined;
++        // PATCH: readlink and symlink are required members according to src/models/FileSystem.js
++        readlink: Function | undefined;
++        symlink: Function | undefined;
+         chmod?: Function | undefined;
+     };
+ };
+@@ -907,18 +909,32 @@ export class GitStashManager {
+         parsed?: boolean | undefined;
+     }): Promise<string[] | any[]>;
+ }
++declare type _GitConfigValue = string | number | boolean | null | undefined;
++declare interface _GitConfigSection {
++    line: string;
++    isSection: boolean;
++    section: string | null;
++    subsection: string | null;
++    name: string | null;
++    value: _GitConfigValue;
++    path: string;
++    modified?: boolean;
++}
+ declare class GitConfig {
+-    static from(text: any): GitConfig;
+-    constructor(text: any);
+-    parsedConfig: any;
+-    get(path: any, getall?: boolean): Promise<any>;
+-    getall(path: any): Promise<any>;
+-    getSubsections(section: any): Promise<any>;
+-    deleteSection(section: any, subsection: any): Promise<void>;
+-    append(path: any, value: any): Promise<void>;
+-    set(path: any, value: any, append?: boolean): Promise<void>;
+-    toString(): any;
++    static from(text: string): GitConfig;
++    constructor(text: string);
++    parsedConfig: _GitConfigSection[];
++    get<T extends _GitConfigValue>(path: string, getall?: false): Promise<T>;
++    get<T extends _GitConfigValue>(path: string, getall: true): Promise<T[]>;
++    get<T extends _GitConfigValue>(path: string, getall = false): Promise<T | T[]>;
++    getall<T extends _GitConfigValue>(path: string): Promise<T[]>;
++    getSubsections(section: string): Promise<string[]>;
++    deleteSection(section: string, subsection: string): Promise<void>;
++    append<T extends _GitConfigValue>(path: string, value: T): Promise<void>;
++    set<T extends _GitConfigValue>(path: any, value: any, append?: boolean): Promise<void>;
++    toString(): string;
+ }
++export const GitConfig: typeof GitConfig;
+ declare class GitIndex {
+     [x: number]: () => {};
+     static from(buffer: any): Promise<GitIndex>;
+diff --git a/node_modules/isomorphic-git/managers/index.js b/node_modules/isomorphic-git/managers/index.js
+index 448e8e1..47d8574 100644
+--- a/node_modules/isomorphic-git/managers/index.js
++++ b/node_modules/isomorphic-git/managers/index.js
+@@ -485,7 +485,8 @@ const findLastIndex = (array, callback) => {
+ 
+ // Note: there are a LOT of edge cases that aren't covered (e.g. keys in sections that also
+ // have subsections, [include] directives, etc.
+-class GitConfig {
++// PATCH: export the GitConfig class
++export class GitConfig {
+   constructor(text) {
+     let section = null;
+     let subsection = null;

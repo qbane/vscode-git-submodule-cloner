@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "verbatimModuleSyntax": true,
+    "lib": ["es2020", "WebWorker"],
+    "types": ["node", "vscode"],
+    "paths": {
+      "$isogit-http": ["./node_modules/isomorphic-git/http/web"],
+      "$node-path": ["./node_modules/@types/path-browserify"]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}
