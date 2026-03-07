@@ -1,12 +1,14 @@
 import type { ExtensionContext } from 'vscode'
 import vscode from 'vscode'
-import git, { type PromiseFsClient } from 'isomorphic-git'
+import git, { type ProgressCallback, type PromiseFsClient } from 'isomorphic-git'
 import http from '$isogit-http'
 import path from '$node-path'
 import { createIsoGitAsyncFs } from './fs'
 import { parseGitModules, type GitSubmoduleSpec } from './gitmodules'
+import { hexToAscii } from './utils'
 
 
+// XXX: if no checkout we may want a different set of progress estimations
 const gitClonePhases: Record<string, [number, number]> = {
   'Counting objects':    [ 6,  3],
   'Compressing objects': [ 9, 12],
@@ -31,6 +33,65 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     const obj = await git.readTree({ fs, dir: '/', oid })
     return obj.tree.filter(x => x.mode === '160000')
       .map(ent => ({...ent, uri: fsp._resolvePath(ent.path).toString()}))
+  }
+
+  async function exists(s: string) {
+    try {
+      await fsp.stat(s)
+      return true
+    } catch (err: any) {
+      if (err.code === 'ENOENT') {
+        return false
+      }
+      throw err
+    }
+  }
+
+  type VscodeWithProgressTask = Parameters<typeof vscode.window.withProgress>[1]
+  type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
+
+  function createProgressReporter(progress: VscodeProgressContext) {
+    let percentage = 0
+
+    let lastUpdatingWorkdir = -1
+    let isUpdatingWorkdirSecondPhase = false
+
+    progress.report({ message: 'Initializing...' })
+
+    return async ({phase, loaded, total}: Parameters<ProgressCallback>[0]) => {
+      let cur = percentage
+      let phase_ = phase
+
+      // updating workdir has two phases;
+      // we switch to the next one upon seeing the process report rewind
+      if (phase == 'Updating workdir') {
+        if (isUpdatingWorkdirSecondPhase || (lastUpdatingWorkdir >= 0 && loaded < lastUpdatingWorkdir)) {
+          isUpdatingWorkdirSecondPhase = true
+          phase_ = 'Updating workdir2'
+        } else {
+          lastUpdatingWorkdir = loaded
+        }
+      }
+
+      const curPhase = gitClonePhases[phase_]
+      if (!curPhase) {
+        progress.report({ message: phase })
+      } else {
+        let msg
+        const [base, span] = curPhase
+        if (loaded != null && total) {
+          const frac = Math.min(loaded / total, 1)
+          cur = base + span * frac
+          msg = `${phase}... (${(frac * 100).toFixed(1)}%, ${loaded}/${total})`
+        } else {
+          cur = base + span * .5
+          msg = loaded != null ? `${phase}... (${loaded})` : phase
+        }
+
+        progress.report({ message: msg, increment: Math.max(0, cur - percentage) })
+        percentage = cur
+      }
+    }
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('git-submodule-cloner.checkout-submodules', async () => {
@@ -58,6 +119,38 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       const errMsg = gitmodules.errors.map(x => x.message).join('\n')
       vscode.window.showWarningMessage(`Failed to resolve the following submodule(s):\n${errMsg}`)
       // TODO: bail out?
+    }
+
+    // when opening a GitHub repo, we need to rebuild the .git folder
+    const mainWSUri = vscode.workspace.workspaceFolders?.[0].uri
+    if (!await exists('/.git') &&
+        mainWSUri?.scheme === 'vscode-vfs' &&
+        mainWSUri?.authority.match(/^github\+?/)) {
+
+      let ref = undefined
+      if (mainWSUri.authority.length > 6) {
+        const decoded = hexToAscii(mainWSUri.authority.slice(7))
+        const refInfo = JSON.parse(decoded) as { v: string, ref: { type: number, id: string } }
+        ref = refInfo.ref.id
+      }
+
+      await vscode.window.withProgress({
+        title: 'Rebuilding .git for this workspace',
+        location: vscode.ProgressLocation.Notification,
+        cancellable: false,
+      }, progress => {
+        return git.clone({
+          fs, http, ...extraOpts,
+          dir: '',  // unused
+          gitdir: '/.git',
+          url: 'https://github.com' + mainWSUri.path,
+          ref,
+          singleBranch: true,
+          depth: 1,
+          noCheckout: true,
+          onProgress: createProgressReporter(progress),
+        })
+      })
     }
 
     let gitlinks
@@ -109,13 +202,6 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         location: vscode.ProgressLocation.Notification,
         cancellable: false,
       }, async (progress, _token) => {
-        let percentage = 0
-
-        let lastUpdatingWorkdir = -1
-        let isUpdatingWorkdirSecondPhase = false
-
-        progress.report({ message: 'Initializing...' })
-
         await git.clone({
           fs, http, ...extraOpts,
           dir,
@@ -127,40 +213,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
           // noCheckout: true,
           batchSize: 128,
           nonBlocking: true,
-          onProgress({phase, loaded, total}) {
-            let cur = percentage
-            let phase_ = phase
-
-            // updating workdir has two phases;
-            // we switch to the next one upon seeing the process report rewind
-            if (phase == 'Updating workdir') {
-              if (isUpdatingWorkdirSecondPhase || (lastUpdatingWorkdir >= 0 && loaded < lastUpdatingWorkdir)) {
-                isUpdatingWorkdirSecondPhase = true
-                phase_ = 'Updating workdir2'
-              } else {
-                lastUpdatingWorkdir = loaded
-              }
-            }
-
-            const curPhase = gitClonePhases[phase_]
-            if (!curPhase) {
-              progress.report({ message: phase })
-            } else {
-              let msg
-              const [base, span] = curPhase
-              if (loaded != null && total) {
-                const frac = Math.min(loaded / total, 1)
-                cur = base + span * frac
-                msg = `${phase}... (${(frac * 100).toFixed(1)}%, ${loaded}/${total})`
-              } else {
-                cur = base + span * .5
-                msg = loaded != null ? `${phase}... (${loaded})` : phase
-              }
-
-              progress.report({ message: msg, increment: Math.max(0, cur - percentage) })
-              percentage = cur
-            }
-          }
+          onProgress: createProgressReporter(progress),
         })
 
         await git.setConfig({ fs, dir: '/', path: `submodule.${mod.name}.active`, value: true })
