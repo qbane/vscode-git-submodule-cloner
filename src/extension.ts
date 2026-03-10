@@ -1,12 +1,17 @@
 import type { ExtensionContext } from 'vscode'
-import vscode from 'vscode'
-import git, { type ProgressCallback, type PromiseFsClient } from 'isomorphic-git'
+import vscode, { workspace, Uri } from 'vscode'
+import git, { type ProgressCallback } from 'isomorphic-git'
 import http from '$isogit-http'
 import path from '$node-path'
-import { createIsoGitAsyncFs } from './fs'
+import { createIsoGitAsyncFs, exists, type IsoGitAsyncFsPrimitive } from './fs'
 import { parseGitModules, type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii } from './utils'
 
+async function findAllSubmoduleLinks(fs: IsoGitAsyncFsPrimitive, gitdir: string) {
+  const oid = await git.resolveRef({ fs, gitdir, ref: 'HEAD' })
+  const obj = await git.readTree({ fs, gitdir, oid })
+  return obj.tree.filter(x => x.mode === '160000')
+}
 
 // XXX: if no checkout we may want a different set of progress estimations
 const gitClonePhases: Record<string, [number, number]> = {
@@ -20,32 +25,67 @@ const gitClonePhases: Record<string, [number, number]> = {
 }
 
 export async function activate(context: ExtensionContext): Promise<ExtensionExports> {
-  const fsp = createIsoGitAsyncFs(vscode.workspace)
-  const fs: PromiseFsClient = { promises: fsp }
+  // FIXME: allow selecting a non-first workspace folder
+  const mainWSUri = workspace.workspaceFolders?.[0].uri!
+
+  const isOnVirtualWorkspace = (mainWSUri &&
+    mainWSUri!.scheme === 'vscode-vfs' &&
+    mainWSUri!.authority.match(/^github\+?/))
+
+  // this is essentially equivalent as above, except that you can change it to true on desktop
+  // to try out the remote repository behavior
+  const isCloningOutOfTree = isOnVirtualWorkspace
+
+  function resolvePath(path: string): Uri {
+    // FIXME: handle multiple workspace folders
+    const root = workspace.workspaceFolders?.[0].uri
+    if (!root) {
+      throw new Error('no workspace root set')
+    }
+
+    let mat: RegExpMatchArray | null
+    if (mat = path.match(/^\/workspace(|\/.*)$/)) {
+      return Uri.joinPath(root, mat[1])
+    }
+    if (mat = path.match(/^\/gitdir(|\/.*)$/)) {
+      return isCloningOutOfTree ?
+        Uri.joinPath(context.storageUri!, 'gitdir', mat[1]) :
+        Uri.joinPath(root, '.git', mat[1])
+    }
+    if (mat = path.match(/^\/store(|\/.*)$/)) {
+      return Uri.joinPath(isCloningOutOfTree ? context.storageUri! : root, mat[1])
+    }
+    throw new Error(`Could not match path prefix from: "${path}"`)
+  }
+
+  const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
+  const fs = { promises: fsp }
 
   const extraOpts: Record<string, string> = {}
   if (vscode.env.uiKind === vscode.UIKind.Web) {
     extraOpts.corsProxy = 'https://cors.isomorphic-git.org'
   }
 
-  async function findAllSubmoduleLinks() {
-    const oid = await git.resolveRef({ fs, dir: '/', ref: 'HEAD' })
-    const obj = await git.readTree({ fs, dir: '/', oid })
-    return obj.tree.filter(x => x.mode === '160000')
-      .map(ent => ({...ent, uri: fsp._resolvePath(ent.path).toString()}))
-  }
-
-  async function exists(s: string) {
-    try {
-      await fsp.stat(s)
-      return true
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        return false
-      }
-      throw err
+  function mountAuxWorkspaceFolder() {
+    if (context.storageUri == null) {
+      throw new Error('no workspace is set')
+    }
+    const userdataUri = vscode.Uri.parse('vscode-userdata:/')
+    const ok = vscode.workspace.updateWorkspaceFolders(
+      vscode.workspace.workspaceFolders?.length ?? 0, 0,
+      // vscode.env.uiKind === vscode.UIKind.Web ?
+      //   { name: 'VS Code user data', uri: userdataUri } :
+      //   { name: 'Extension storage', uri: context.globalStorageUri },
+      { name: 'Workspace submodules', uri: context.storageUri },
+    )
+    if (!ok) {
+      // console.warn('updateWorkspaceFolders returns false')
     }
   }
+
+  // if (vscode.env.uiKind === vscode.UIKind.Web) {
+  mountAuxWorkspaceFolder()
+  // }
 
   type VscodeWithProgressTask = Parameters<typeof vscode.window.withProgress>[1]
   type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
@@ -98,7 +138,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     let gmraw: string
     try {
       // FIXME: reject if it is a symlink
-      gmraw = await fsp.readFile('/.gitmodules', 'utf-8') as string
+      gmraw = await fsp.readFile('/workspace/.gitmodules', 'utf-8') as string
     } catch (err: any) {
       if (err?.code === 'FileNotFound') {
         await vscode.window.showErrorMessage('No .gitmodules discovered.')
@@ -121,15 +161,14 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       // TODO: bail out?
     }
 
-    // when opening a GitHub repo, we need to rebuild the .git folder
-    const mainWSUri = vscode.workspace.workspaceFolders?.[0].uri
-    if (!await exists('/.git') &&
-        mainWSUri?.scheme === 'vscode-vfs' &&
-        mainWSUri?.authority.match(/^github\+?/)) {
+    const hasInTreeGitDir = await exists(fsp, '/workspace/.git')
 
+    // when opening a GitHub repo on vscode.dev, we need to rebuild the .git folder
+    if (isOnVirtualWorkspace && !hasInTreeGitDir) {
       let ref = undefined
-      if (mainWSUri.authority.length > 6) {
+      if (mainWSUri.authority.length > 6 /* "github+"... */) {
         const decoded = hexToAscii(mainWSUri.authority.slice(7))
+        // TODO: figure out different types
         const refInfo = JSON.parse(decoded) as { v: string, ref: { type: number, id: string } }
         ref = refInfo.ref.id
       }
@@ -142,7 +181,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         return git.clone({
           fs, http, ...extraOpts,
           dir: '',  // unused
-          gitdir: '/.git',
+          gitdir: '/gitdir',
           url: 'https://github.com' + mainWSUri.path,
           ref,
           singleBranch: true,
@@ -155,7 +194,11 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
     let gitlinks
     try {
-      gitlinks = await findAllSubmoduleLinks()
+      // for reading, we prefer fallback-able so that it can be mocked
+      // the "isCloningOutOfTree" does not yet make sense at this point
+      // XXX: which should be honored first?
+      const gitdir = hasInTreeGitDir ? '/workspace/.git' : '/gitdir'
+      gitlinks = await findAllSubmoduleLinks(fsp, gitdir)
     } catch (err: any) {
       await vscode.window.showErrorMessage('Failed to find submodule gitlinks: ' + err.message)
       return
@@ -163,27 +206,43 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
     for (const mod of gitmodules.entries) {
       // finds the matching gitlink
-      const uri = fsp._resolvePath(mod.path)
-      const uristr = uri.toString()
-      const loc = gitlinks.find(v => v.uri === uristr)
+      const pathToSubmod = path.join('/', mod.path)
+      const loc = gitlinks.find(v => path.join('/', v.path) === pathToSubmod)
       if (!loc?.oid) throw new Error('Could not find submodule ref in parent project')
 
-      const submodDir = '/' + mod.path
-      const submodGitDir = '/.git/modules/' + mod.name
-      await fsp.mkdir(submodGitDir)
-      const pathFromSubmodToGitDir = path.relative(submodDir, submodGitDir)
+      const dirSpec = isCloningOutOfTree ?
+        { oot: true  as const, dir: `/store/submodules/${mod.name}`, gitdir: undefined } :
+        { oot: false as const, dir: `/workspace/${mod.path}`,        gitdir: `/gitdir/modules/${mod.name}` }
 
-      await vscode.workspace.fs.writeFile(uri.with({ path: uri.path + '/.git' }), new TextEncoder().encode(`gitdir: ${pathFromSubmodToGitDir}\n`))
+      if (!dirSpec.oot) {
+        await fsp.mkdir(dirSpec.gitdir)
+        const pathFromSubmodToGitDir = path.relative(`/${mod.path}`, `/.git/modules/${mod.name}`)
+        await fsp.writeFile(
+          path.join(dirSpec.dir, '.git'),
+          new TextEncoder().encode(`gitdir: ${pathFromSubmodToGitDir}\n`))
+      }
 
       try {
-        await cloneSubmodule(mod, submodGitDir, loc.oid, submodDir)
+        await cloneSubmodule({
+          mod,
+          ref: loc.oid,
+          dir: dirSpec.dir,
+          gitdir: dirSpec.gitdir,
+        })
       } catch (err) {
         console.error(err)
         debugger
       }
     }
 
-    async function cloneSubmodule(mod: GitSubmoduleSpec, gitdir: string, ref: string, dir: string) {
+    interface CloneSubmoduleSpec {
+      mod: GitSubmoduleSpec
+      dir: string
+      gitdir: string | undefined
+      ref: string
+    }
+
+    async function cloneSubmodule({mod, ...spec}: CloneSubmoduleSpec) {
       let httpUrl = mod.url
       if (httpUrl.startsWith('./') || httpUrl.startsWith('../')) {
         // FIXME: handle relative URL
@@ -198,29 +257,30 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       const titleMsg = mod.path === mod.name ? `"${mod.path}/"` : `"${mod.name}" to "${mod.path}/"`
 
       await vscode.window.withProgress({
-        title: `Cloning ${titleMsg}`,
+        title: `Cloning submodule ${titleMsg}`,
         location: vscode.ProgressLocation.Notification,
         cancellable: false,
       }, async (progress, _token) => {
         await git.clone({
           fs, http, ...extraOpts,
-          dir,
-          gitdir,
           url: httpUrl,
-          ref,
           singleBranch: true,
           depth: 1,
-          // noCheckout: true,
+          // noCheckout: false,
+          ...spec,
           batchSize: 128,
           nonBlocking: true,
           onProgress: createProgressReporter(progress),
         })
-
-        await git.setConfig({ fs, dir: '/', path: `submodule.${mod.name}.active`, value: true })
-        await git.setConfig({ fs, dir: '/', path: `submodule.${mod.name}.url`, value: httpUrl })
-
-        vscode.window.showInformationMessage(`Cloned ${titleMsg}.`)
       })
+
+      if (hasInTreeGitDir && !isCloningOutOfTree) {
+        // record it for local-git compatibility
+        await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
+        await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
+      }
+
+      vscode.window.showInformationMessage(`Cloned submodule ${titleMsg}.`)
     }
   }))
 

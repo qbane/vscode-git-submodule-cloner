@@ -1,4 +1,4 @@
-import type { workspace as vscodeWorkspace } from 'vscode'
+import type { FileSystem } from 'vscode'
 import { FileSystemError, FileType, Uri } from 'vscode'
 
 // eye-balled from the codebase of isomorphic-git and lightning-fs
@@ -71,23 +71,15 @@ class IsoGitFSError extends Error {
   }
 }
 
-interface FsExtra {
-  _resolvePath: (s: string) => Uri
+interface IsoGitAsyncFsOptions {
+  // TODO: add an option to allow path resolution func to be invalidated
+  // when eg. workspace dir changes; makes all further fs operations throw
+  resolvePath(path: string): Uri
 }
 
-export function createIsoGitAsyncFs(vsws: typeof vscodeWorkspace): IsoGitAsyncFsPrimitive & FsExtra {
-  const vscfs = vsws.fs
+export function createIsoGitAsyncFs(vscfs: FileSystem, options: IsoGitAsyncFsOptions): IsoGitAsyncFsPrimitive {
   const textEncoder = new TextEncoder
   const textDecoder = new TextDecoder
-
-  function resolvePath(path: string): Uri {
-    // FIXME: handle multiple workspace folders
-    const root = vsws.workspaceFolders?.[0].uri
-    if (!root) {
-      throw new Error('no workspace root set')
-    }
-    return Uri.joinPath(root, path)
-  }
 
   type WrapUriHandler<T> = T extends (uri: Uri, ...rest: infer Ps) => infer R ? (path: string, ...rest: Ps) => R : never
   type UnwrapUriHandler<T> = T extends (path: string, ...rest: infer Ps) => infer R ? (uri: Uri, ...rest: Ps) => R : never
@@ -95,10 +87,10 @@ export function createIsoGitAsyncFs(vsws: typeof vscodeWorkspace): IsoGitAsyncFs
   function wrapUriHandler<R, Ps extends unknown[]>(fn: (uri: Uri, ...rest: Ps) => Promise<R>): WrapUriHandler<typeof fn> {
     // this is so arcane because iso-git proactively tests if my fs is promise-based when binding;
     // by calling readFile() and it throws at the first place; see src/models/FileSystem.js
-    const inner = async (uri: Uri, ...rest: any): Promise<R> => {
+    const inner = async (path: string, ...rest: any): Promise<R> => {
       try {
         // XXX: can be simplified with Promise.try
-        return await fn(uri, ...rest)
+        return await fn(options.resolvePath(path), ...rest)
       } catch (err) {
         if (err instanceof FileSystemError) {
           // TODO: map all fs errors
@@ -111,38 +103,38 @@ export function createIsoGitAsyncFs(vsws: typeof vscodeWorkspace): IsoGitAsyncFs
     }
 
     // hack to make fn.length inact
-    if (fn.length === 1) return (async (path: string) => inner(resolvePath(path))) as any
-    if (fn.length === 2) return (async (path: string, p0: any) => inner(resolvePath(path), p0)) as any
-    if (fn.length === 3) return (async (path: string, p0: any, p1: any) => inner(resolvePath(path), p0, p1)) as any
+    if (fn.length === 1) return inner
+    if (fn.length === 2) return ((path: string, p0: any) => inner(path, p0)) as any
+    if (fn.length === 3) return ((path: string, p0: any, p1: any) => inner(path, p0, p1)) as any
 
     // throw new TypeError('fn accepts too many arguments')
-    return (path: string, ...rest: Ps) => inner(resolvePath(path), ...rest)
+    return (path: string, ...rest: Ps) => inner(path, ...rest)
   }
 
   type AsyncFsUriPrimitive = { [K in keyof IsoGitAsyncFsPrimitive]: UnwrapUriHandler<IsoGitAsyncFsPrimitive[K]> }
 
   const fspUri: AsyncFsUriPrimitive = {
-    async readFile(uri: Uri, options) {
+    async readFile(uri, options) {
       const isStrUtf8 = (s: unknown) => s === 'utf8' || s === 'utf-8'
       const data = await vscfs.readFile(uri)
       const isOptUtf8 = isStrUtf8(typeof options === 'string' ? options : options?.encoding)
       return isOptUtf8 ? textDecoder.decode(data) : data
     },
-    async writeFile(uri: Uri, contents: string | Uint8Array) {
+    async writeFile(uri, contents: string | Uint8Array, options) {
       const data = typeof contents === 'string' ? textEncoder.encode(contents) : contents
       await vscfs.writeFile(uri, data)
     },
-    async mkdir(uri: Uri) {
+    async mkdir(uri) {
       await vscfs.createDirectory(uri)
     },
     async rmdir(uri: Uri) {
       // FIXME: not checking if it is a dir for atomicity
       await vscfs.delete(uri)
     },
-    async unlink(uri: Uri) {
+    async unlink(uri) {
       await vscfs.delete(uri)
     },
-    async stat(uri: Uri) {
+    async stat(uri) {
       const { type, size, ctime, mtime } = await vscfs.stat(uri)
       if (type & FileType.SymbolicLink) {
         throw new IsoGitFSError('EUNSUP', 'Unsupported: should follow symlink: ' + uri.toString())
@@ -151,14 +143,14 @@ export function createIsoGitAsyncFs(vsws: typeof vscodeWorkspace): IsoGitAsyncFs
                  type & FileType.File ? 'file' : 'unknown'
       return new MyStat(tt, size, ctime, mtime)
     },
-    async lstat(uri: Uri) {
+    async lstat(uri) {
       const { type, size, ctime, mtime } = await vscfs.stat(uri)
       const tt = type & FileType.SymbolicLink ? 'symlink' :
                  type & FileType.Directory ? 'dir' :
                  type & FileType.File ? 'file' :'unknown'
       return new MyStat(tt, size, ctime, mtime)
     },
-    async readdir(uri: Uri) {
+    async readdir(uri) {
       // reduce the noise isogit makes, but loses atomicity
       const s = await vscfs.stat(uri)
       if (!(s.type & FileType.Directory)) {
@@ -180,5 +172,17 @@ export function createIsoGitAsyncFs(vsws: typeof vscodeWorkspace): IsoGitAsyncFs
   const fsp = Object.fromEntries(
     Object.entries<any>(fspUri).map(([k, v]) => [k, wrapUriHandler(v)])) as unknown as IsoGitAsyncFsPrimitive
 
-  return { ...fsp, _resolvePath: resolvePath }
+  return fsp
+}
+
+export async function exists(fs: IsoGitAsyncFsPrimitive, s: string) {
+  try {
+    await fs.stat(s)
+    return true
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      return false
+    }
+    throw err
+  }
 }
