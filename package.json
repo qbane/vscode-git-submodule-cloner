@@ -4,7 +4,7 @@
   "version": "0.0.2",
   "license": "MIT",
   "repository": "https://github.com/qbane/vscode-git-submodule-cloner",
-  "displayName": "Submodule cloner",
+  "displayName": "Submodule Cloner",
   "publisher": "qbane",
   "description": "The long missing submodule cloner powered by isomorphic-git",
   "categories": [
@@ -51,13 +51,13 @@
   "contributes": {
     "commands": [
       {
-        "category": "Git submodule cloner",
+        "category": "Git Submodule Cloner",
         "title": "Initialize submodules only (WIP)",
         "command": "git-submodule-cloner.init-submodules",
         "enablement": "false"
       },
       {
-        "category": "Git submodule cloner",
+        "category": "Git Submodule Cloner",
         "title": "Initialize and checkout submodules",
         "command": "git-submodule-cloner.checkout-submodules"
       }
