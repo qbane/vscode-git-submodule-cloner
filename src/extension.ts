@@ -115,7 +115,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
       const curPhase = gitClonePhases[phase_]
       if (!curPhase) {
-        progress.report({ message: phase })
+        progress.report({ message: loaded != null ? `${phase}... (${loaded})` : phase })
       } else {
         let msg
         const [base, span] = curPhase

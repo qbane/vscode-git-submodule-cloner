@@ -1,3 +1,43 @@
+diff --git a/node_modules/isomorphic-git/http/web/index.js b/node_modules/isomorphic-git/http/web/index.js
+index 67f6765..dc1f168 100644
+--- a/node_modules/isomorphic-git/http/web/index.js
++++ b/node_modules/isomorphic-git/http/web/index.js
+@@ -122,6 +122,25 @@ function fromStream(stream) {
+   }
+ }
+ 
++function withProgress(asyncIterable, onProgress) {
++  let loaded = 0;
++  const iter = asyncIterable[Symbol.asyncIterator]();
++
++  return {
++    [Symbol.asyncIterator]() { return this; },
++    async next() {
++      const result = await iter.next();
++      if (!result.done && onProgress) {
++        loaded += result.value.byteLength ?? 1;
++        await onProgress({ phase: 'Receiving from server', loaded });
++      }
++      return result;
++    },
++    return(value) { return iter.return?.(value) ?? Promise.resolve({ done: true, value }); },
++    throw(err)    { return iter.throw?.(err)    ?? Promise.reject(err); },
++  };
++}
++
+ /* eslint-env browser */
+ 
+ /**
+@@ -144,7 +163,8 @@ async function request({
+   const res = await fetch(url, { method, headers, body });
+   const iter =
+     res.body && res.body.getReader
+-      ? fromStream(res.body)
++      // PATCH: make onProgress actually "works"
++      ? withProgress(fromStream(res.body), onProgress)
+       : [new Uint8Array(await res.arrayBuffer())];
+   // convert Header object to ordinary JSON
+   headers = {};
 diff --git a/node_modules/isomorphic-git/managers/index.d.ts b/node_modules/isomorphic-git/managers/index.d.ts
 index 5e1d4d8..8eb1ac9 100644
 --- a/node_modules/isomorphic-git/managers/index.d.ts
