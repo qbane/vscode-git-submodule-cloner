@@ -82,10 +82,6 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     }
   }
 
-  // if (vscode.env.uiKind === vscode.UIKind.Web) {
-  mountAuxWorkspaceFolder()
-  // }
-
   type VscodeWithProgressTask = Parameters<typeof vscode.window.withProgress>[1]
   type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
 
@@ -161,9 +157,10 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     }
 
     const hasInTreeGitDir = await exists(fsp, '/workspace/.git')
+    let hasGitDir = await exists(fsp, '/gitdir')
 
     // when opening a GitHub repo on vscode.dev, we need to rebuild the .git folder
-    if (isOnVirtualWorkspace && !hasInTreeGitDir) {
+    if (isOnVirtualWorkspace && !hasInTreeGitDir && !hasGitDir) {
       let ref = undefined
       if (mainWSUri.authority.length > 6 /* "github+"... */) {
         const decoded = hexToAscii(mainWSUri.authority.slice(7))
@@ -189,6 +186,8 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
           onProgress: createProgressReporter(progress),
         })
       })
+
+      hasGitDir = true
     }
 
     let gitlinks
@@ -274,13 +273,32 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       })
 
       if (hasInTreeGitDir && !isCloningOutOfTree) {
-        // record it for local-git compatibility
+        // record it for canonical-git compatibility
         await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
         await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
       }
 
       vscode.window.showInformationMessage(`Cloned submodule ${titleMsg}.`)
     }
+
+    // if (vscode.env.uiKind === vscode.UIKind.Web) {
+    mountAuxWorkspaceFolder()
+    // }
+  }))
+
+  context.subscriptions.push(vscode.commands.registerCommand('git-submodule-cloner.add-submodules-to-workspace', async () => {
+    if (context.storageUri == null) {
+      vscode.window.showErrorMessage('No workspace is opened.')
+      return
+    }
+
+    if (workspace.getWorkspaceFolder(context.storageUri)) {
+      vscode.window.showInformationMessage('Submodule store for this workspace was already mounted.')
+      return
+    }
+
+    mountAuxWorkspaceFolder()
+    vscode.window.showInformationMessage('Added the submodule store to the workspace.')
   }))
 
   return {}

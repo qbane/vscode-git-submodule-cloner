@@ -61,6 +61,12 @@
         "category": "Git Submodule Cloner",
         "title": "Initialize and checkout submodules",
         "command": "git-submodule-cloner.checkout-submodules"
+      },
+      {
+        "category": "Git Submodule Cloner",
+        "title": "Add submodule store to workspace",
+        "command": "git-submodule-cloner.add-submodules-to-workspace",
+        "enablement": "workbenchState != empty"
       }
     ]
   }
