@@ -26,11 +26,11 @@ const gitClonePhases: Record<string, [number, number]> = {
 
 export async function activate(context: ExtensionContext): Promise<ExtensionExports> {
   // FIXME: allow selecting a non-first workspace folder
-  const mainWSUri = workspace.workspaceFolders?.[0].uri!
+  const mainWSUri = workspace.workspaceFolders?.[0]?.uri
 
   const isOnVirtualWorkspace = (mainWSUri &&
-    mainWSUri!.scheme === 'vscode-vfs' &&
-    mainWSUri!.authority.match(/^github\+?/))
+    mainWSUri.scheme === 'vscode-vfs' &&
+    mainWSUri.authority.match(/^github\+?/))
 
   // this is essentially equivalent as above, except that you can change it to true on desktop
   // to try out the remote repository behavior
@@ -38,22 +38,22 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
   function resolvePath(path: string): Uri {
     // FIXME: handle multiple workspace folders
-    const root = workspace.workspaceFolders?.[0].uri
+    const root = workspace.workspaceFolders?.[0]?.uri
     if (!root) {
       throw new Error('no workspace root set')
     }
 
     let mat: RegExpMatchArray | null
     if (mat = path.match(/^\/workspace(|\/.*)$/)) {
-      return Uri.joinPath(root, mat[1])
+      return Uri.joinPath(root, mat[1]!)
     }
     if (mat = path.match(/^\/gitdir(|\/.*)$/)) {
       return isCloningOutOfTree ?
-        Uri.joinPath(context.storageUri!, 'gitdir', mat[1]) :
-        Uri.joinPath(root, '.git', mat[1])
+        Uri.joinPath(context.storageUri!, 'gitdir', mat[1]!) :
+        Uri.joinPath(root, '.git', mat[1]!)
     }
     if (mat = path.match(/^\/store(|\/.*)$/)) {
-      return Uri.joinPath(isCloningOutOfTree ? context.storageUri! : root, mat[1])
+      return Uri.joinPath(isCloningOutOfTree ? context.storageUri! : root, mat[1]!)
     }
     throw new Error(`Could not match path prefix from: "${path}"`)
   }
@@ -70,11 +70,10 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     if (context.storageUri == null) {
       throw new Error('no workspace is set')
     }
-    const userdataUri = vscode.Uri.parse('vscode-userdata:/')
     const ok = vscode.workspace.updateWorkspaceFolders(
       vscode.workspace.workspaceFolders?.length ?? 0, 0,
       // vscode.env.uiKind === vscode.UIKind.Web ?
-      //   { name: 'VS Code user data', uri: userdataUri } :
+      //   { name: 'VS Code user data', uri: vscode.Uri.parse('vscode-userdata:/') } :
       //   { name: 'Extension storage', uri: context.globalStorageUri },
       { name: 'Workspace submodules', uri: context.storageUri },
     )

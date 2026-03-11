@@ -1,13 +1,18 @@
 {
   "compilerOptions": {
-    "module": "esnext",
+    "module": "preserve",
+    "target": "esnext",
     "moduleResolution": "bundler",
-    "skipLibCheck": true,
-    "strict": true,
     "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
     "allowJs": true,
     "checkJs": true,
+    "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedSideEffectImports": true,
     "lib": ["es2020", "WebWorker"],
     "types": ["node", "vscode"],
     "paths": {
