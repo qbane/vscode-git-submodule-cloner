@@ -45,7 +45,8 @@
     "vscode:prepublish": "npm run compile",
     "tsc": "tsc --noEmit",
     "build": "node bin/esbuild.mjs",
-    "compile": "npm run tsc && npm run build"
+    "compile": "npm run tsc && npm run build",
+    "test": "true # (WIP)"
   },
   "activationEvents": [],
   "contributes": {
