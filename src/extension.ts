@@ -7,6 +7,27 @@ import { createIsoGitAsyncFs, exists, type IsoGitAsyncFsPrimitive } from './fs'
 import { parseGitModules, type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii } from './utils'
 
+
+async function readGitModules(fsp: IsoGitAsyncFsPrimitive, dir: string) {
+  const gmraw = await fsp.readFile(
+    // FIXME: reject if it is a symlink
+    path.join(dir, '.gitmodules'), 'utf-8').catch(err => (
+      Promise.reject(new Error('Failed to read .gitmodules: ' + err.message, { cause: err }))
+  ))
+
+  const gitmodules = await parseGitModules(gmraw).catch(err => (
+    Promise.reject(new Error('Failed to parse .gitmodules: ' + err.message, { cause: err }))
+  ))
+
+  if (gitmodules.errors.length) {
+    const errMsg = gitmodules.errors.map(x => x.message).join('\n')
+    vscode.window.showWarningMessage(`Failed to resolve the following submodule(s):\n${errMsg}`)
+    // TODO: bail out?
+  }
+
+  return gitmodules.entries
+}
+
 async function findAllSubmoduleLinks(fs: IsoGitAsyncFsPrimitive, gitdir: string) {
   const oid = await git.resolveRef({ fs, gitdir, ref: 'HEAD' })
   const obj = await git.readTree({ fs, gitdir, oid })
@@ -129,32 +150,54 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     }
   }
 
+  interface CloneSubmoduleSpec {
+    mod: GitSubmoduleSpec
+    dir: string
+    gitdir: string | undefined
+    ref: string
+  }
+
+  async function cloneSubmodule({mod, ...spec}: CloneSubmoduleSpec) {
+    let httpUrl = mod.url
+    if (httpUrl.startsWith('./') || httpUrl.startsWith('../')) {
+      // FIXME: handle relative URL
+      throw new Error('Relative URL is not supported: ' + httpUrl)
+    }
+    // try to rewrite SSH URI to http
+    let mat: RegExpMatchArray | null
+    if (mat = mod.url.match(/^git@github\.com:([^]+)$/)) {
+      httpUrl = 'https://github.com/' + mat[1]
+    }
+
+    const titleMsg = mod.path === mod.name ? `"${mod.path}/"` : `"${mod.name}" to "${mod.path}/"`
+
+    await vscode.window.withProgress({
+      title: `Cloning submodule ${titleMsg}`,
+      location: vscode.ProgressLocation.Notification,
+      cancellable: false,
+    }, async (progress, _token) => {
+      await git.clone({
+        fs, http, ...extraOpts,
+        url: httpUrl,
+        singleBranch: true,
+        depth: 1,
+        // noCheckout: false,
+        ...spec,
+        batchSize: 128,
+        nonBlocking: true,
+        onProgress: createProgressReporter(progress),
+      })
+    })
+
+    return { httpUrl, titleMsg }
+  }
+
   context.subscriptions.push(vscode.commands.registerCommand('git-submodule-cloner.checkout-submodules', async () => {
-    let gmraw: string
-    try {
-      // FIXME: reject if it is a symlink
-      gmraw = await fsp.readFile('/workspace/.gitmodules', 'utf-8') as string
-    } catch (err: any) {
-      if (err?.code === 'FileNotFound') {
-        await vscode.window.showErrorMessage('No .gitmodules discovered.')
-        return
-      }
-      throw err
-    }
-
-    let gitmodules
-    try {
-      gitmodules = await parseGitModules(gmraw)
-    } catch (err: any) {
-      await vscode.window.showErrorMessage('Failed to parse .gitmodules: ' + err.message)
-      return
-    }
-
-    if (gitmodules.errors.length) {
-      const errMsg = gitmodules.errors.map(x => x.message).join('\n')
-      vscode.window.showWarningMessage(`Failed to resolve the following submodule(s):\n${errMsg}`)
-      // TODO: bail out?
-    }
+    const gitmodules = await readGitModules(fsp, '/workspace').catch(err => {
+      vscode.window.showErrorMessage(err.message)
+      return null
+    })
+    if (!gitmodules) return
 
     const hasInTreeGitDir = await exists(fsp, '/workspace/.git')
     let hasGitDir = await exists(fsp, '/gitdir')
@@ -202,7 +245,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       return
     }
 
-    for (const mod of gitmodules.entries) {
+    for (const mod of gitmodules) {
       // finds the matching gitlink
       const pathToSubmod = path.join('/', mod.path)
       const loc = gitlinks.find(v => path.join('/', v.path) === pathToSubmod)
@@ -221,64 +264,24 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       }
 
       try {
-        await cloneSubmodule({
+        const { httpUrl, titleMsg } = await cloneSubmodule({
           mod,
           ref: loc.oid,
           dir: dirSpec.dir,
           gitdir: dirSpec.gitdir,
         })
-      } catch (err) {
+
+        if (hasInTreeGitDir && !isCloningOutOfTree) {
+          // record it for canonical-git compatibility
+          await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
+          await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
+        }
+
+        vscode.window.showInformationMessage(`Cloned submodule ${titleMsg}.`)
+      } catch (err: any) {
         console.error(err)
-        debugger
+        vscode.window.showErrorMessage(`Encountered error cloning "${mod.name}": ${err.message}`)
       }
-    }
-
-    interface CloneSubmoduleSpec {
-      mod: GitSubmoduleSpec
-      dir: string
-      gitdir: string | undefined
-      ref: string
-    }
-
-    async function cloneSubmodule({mod, ...spec}: CloneSubmoduleSpec) {
-      let httpUrl = mod.url
-      if (httpUrl.startsWith('./') || httpUrl.startsWith('../')) {
-        // FIXME: handle relative URL
-        throw new Error('Relative URL is not supported: ' + httpUrl)
-      }
-      // try to rewrite SSH URI to http
-      let mat: RegExpMatchArray | null
-      if (mat = mod.url.match(/^git@github\.com:([^]+)$/)) {
-        httpUrl = 'https://github.com/' + mat[1]
-      }
-
-      const titleMsg = mod.path === mod.name ? `"${mod.path}/"` : `"${mod.name}" to "${mod.path}/"`
-
-      await vscode.window.withProgress({
-        title: `Cloning submodule ${titleMsg}`,
-        location: vscode.ProgressLocation.Notification,
-        cancellable: false,
-      }, async (progress, _token) => {
-        await git.clone({
-          fs, http, ...extraOpts,
-          url: httpUrl,
-          singleBranch: true,
-          depth: 1,
-          // noCheckout: false,
-          ...spec,
-          batchSize: 128,
-          nonBlocking: true,
-          onProgress: createProgressReporter(progress),
-        })
-      })
-
-      if (hasInTreeGitDir && !isCloningOutOfTree) {
-        // record it for canonical-git compatibility
-        await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
-        await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
-      }
-
-      vscode.window.showInformationMessage(`Cloned submodule ${titleMsg}.`)
     }
 
     // if (vscode.env.uiKind === vscode.UIKind.Web) {

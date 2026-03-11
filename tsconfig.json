@@ -11,9 +11,8 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
     "noUncheckedSideEffectImports": true,
-    "lib": ["es2020", "WebWorker"],
+    "lib": ["es2022", "WebWorker"],
     "types": ["node", "vscode"],
     "paths": {
       "$isogit-http": ["./node_modules/isomorphic-git/http/web"],
