@@ -28,10 +28,16 @@ async function readGitModules(fsp: IsoGitAsyncFsPrimitive, dir: string) {
   return gitmodules.entries
 }
 
-async function findAllSubmoduleLinks(fs: IsoGitAsyncFsPrimitive, gitdir: string) {
+async function findSubmoduleOid(fs: IsoGitAsyncFsPrimitive, gitdir: string, filepath: string) {
   const oid = await git.resolveRef({ fs, gitdir, ref: 'HEAD' })
-  const obj = await git.readTree({ fs, gitdir, oid })
-  return obj.tree.filter(x => x.mode === '160000')
+  const obj = await git.readTree({ fs, gitdir, oid, filepath: path.dirname(filepath) })
+    .then(dobj => {
+      const filename = path.basename(filepath)
+      const obj = dobj.tree.find(x => x.path === filename)
+      return obj ?? Promise.reject()
+    })
+    .catch(() => Promise.reject(new Error(`"${filepath}" does not exist in HEAD`)))
+  return obj.type === 'commit' ? obj.oid : null
 }
 
 // XXX: if no checkout we may want a different set of progress estimations
@@ -235,21 +241,19 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
     let gitlinks
     try {
-      // for reading, we prefer fallback-able so that it can be mocked
-      // the "isCloningOutOfTree" does not yet make sense at this point
-      // XXX: which should be honored first?
-      const gitdir = hasInTreeGitDir ? '/workspace/.git' : '/gitdir'
-      gitlinks = await findAllSubmoduleLinks(fsp, gitdir)
     } catch (err: any) {
       await vscode.window.showErrorMessage('Failed to find submodule gitlinks: ' + err.message)
       return
     }
 
+    // for reading, we prefer fallback-able so that it can be mocked
+    // the "isCloningOutOfTree" does not yet make sense at this point
+    // XXX: which should be honored first?
+    const gitdirForReading = hasInTreeGitDir ? '/workspace/.git' : '/gitdir'
+
     for (const mod of gitmodules) {
-      // finds the matching gitlink
-      const pathToSubmod = path.join('/', mod.path)
-      const loc = gitlinks.find(v => path.join('/', v.path) === pathToSubmod)
-      if (!loc?.oid) throw new Error('Could not find submodule ref in parent project')
+      const oid = await findSubmoduleOid(fsp, gitdirForReading, mod.path)
+      if (oid == null) throw new Error(`Could not find ref in parent project of submodule "${mod.name}"`)
 
       const dirSpec = isCloningOutOfTree ?
         { oot: true  as const, dir: `/store/submodules/${mod.name}`, gitdir: undefined } :
@@ -266,7 +270,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       try {
         const { httpUrl, titleMsg } = await cloneSubmodule({
           mod,
-          ref: loc.oid,
+          ref: oid,
           dir: dirSpec.dir,
           gitdir: dirSpec.gitdir,
         })
@@ -284,9 +288,9 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       }
     }
 
-    // if (vscode.env.uiKind === vscode.UIKind.Web) {
-    mountAuxWorkspaceFolder()
-    // }
+    if (isCloningOutOfTree) {
+      mountAuxWorkspaceFolder()
+    }
   }))
 
   context.subscriptions.push(vscode.commands.registerCommand('git-submodule-cloner.add-submodules-to-workspace', async () => {
