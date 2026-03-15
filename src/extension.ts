@@ -30,7 +30,8 @@ async function readGitModules(fsp: IsoGitAsyncFsPrimitive, dir: string) {
 
 async function findSubmoduleOid(fs: IsoGitAsyncFsPrimitive, gitdir: string, filepath: string) {
   const oid = await git.resolveRef({ fs, gitdir, ref: 'HEAD' })
-  const obj = await git.readTree({ fs, gitdir, oid, filepath: path.dirname(filepath) })
+  const parent = path.dirname(filepath)
+  const obj = await git.readTree({ fs, gitdir, oid, filepath: parent !== '.' ? parent : undefined })
     .then(dobj => {
       const filename = path.basename(filepath)
       const obj = dobj.tree.find(x => x.path === filename)
