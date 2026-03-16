@@ -116,7 +116,7 @@ index 5e1d4d8..8eb1ac9 100644
      [x: number]: () => {};
      static from(buffer: any): Promise<GitIndex>;
 diff --git a/node_modules/isomorphic-git/managers/index.js b/node_modules/isomorphic-git/managers/index.js
-index 448e8e1..47d8574 100644
+index 9415d64..e373c81 100644
 --- a/node_modules/isomorphic-git/managers/index.js
 +++ b/node_modules/isomorphic-git/managers/index.js
 @@ -485,7 +485,8 @@ const findLastIndex = (array, callback) => {
