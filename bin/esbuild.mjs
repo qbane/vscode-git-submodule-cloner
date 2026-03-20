@@ -39,12 +39,21 @@ const contexts = await Promise.all([
   esbuild.context(webOptions),
 ])
 
-const promises = []
-for (const context of contexts) {
-  promises.push(context.rebuild())
-}
+if (process.argv[2] === '--watch') {
+  const promises = [];
+  for (const context of contexts) {
+    promises.push(context.watch())
+  }
+  console.log('Watching...')
+  await Promise.all(promises).then(() => {})
+} else {
+  const promises = []
+  for (const context of contexts) {
+    promises.push(context.rebuild())
+  }
 
-await Promise.all(promises)
-for (const context of contexts) {
-  await context.dispose()
+  await Promise.all(promises)
+  for (const context of contexts) {
+    await context.dispose()
+  }
 }
