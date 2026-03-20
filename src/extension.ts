@@ -5,41 +5,8 @@ import http from '$isogit-http'
 import path from '$node-path'
 import { createIsoGitAsyncFs, exists, type IsoGitAsyncFsPrimitive } from './fs'
 import { parseGitModules, type GitSubmoduleSpec } from './gitmodules'
-import { hexToAscii } from './utils'
-
-
-async function readGitModules(fsp: IsoGitAsyncFsPrimitive, dir: string) {
-  const gmraw = await fsp.readFile(
-    // FIXME: reject if it is a symlink
-    path.join(dir, '.gitmodules'), 'utf-8').catch(err => (
-      Promise.reject(new Error('Failed to read .gitmodules: ' + err.message, { cause: err }))
-  ))
-
-  const gitmodules = await parseGitModules(gmraw).catch(err => (
-    Promise.reject(new Error('Failed to parse .gitmodules: ' + err.message, { cause: err }))
-  ))
-
-  if (gitmodules.errors.length) {
-    const errMsg = gitmodules.errors.map(x => x.message).join('\n')
-    vscode.window.showWarningMessage(`Failed to resolve the following submodule(s):\n${errMsg}`)
-    // TODO: bail out?
-  }
-
-  return gitmodules.entries
-}
-
-async function findSubmoduleOid(fs: IsoGitAsyncFsPrimitive, gitdir: string, filepath: string) {
-  const oid = await git.resolveRef({ fs, gitdir, ref: 'HEAD' })
-  const parent = path.dirname(filepath)
-  const obj = await git.readTree({ fs, gitdir, oid, filepath: parent !== '.' ? parent : undefined })
-    .then(dobj => {
-      const filename = path.basename(filepath)
-      const obj = dobj.tree.find(x => x.path === filename)
-      return obj ?? Promise.reject()
-    })
-    .catch(() => Promise.reject(new Error(`"${filepath}" does not exist in HEAD`)))
-  return obj.type === 'commit' ? obj.oid : null
-}
+import { hexToAscii, textEncode } from './utils'
+import { findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
 
 // XXX: if no checkout we may want a different set of progress estimations
 const gitClonePhases: Record<string, [number, number]> = {
@@ -54,11 +21,11 @@ const gitClonePhases: Record<string, [number, number]> = {
 
 export async function activate(context: ExtensionContext): Promise<ExtensionExports> {
   // FIXME: allow selecting a non-first workspace folder
-  const mainWSUri = workspace.workspaceFolders?.[0]?.uri
+  const mainWSFolderUri = workspace.workspaceFolders?.[0]?.uri
 
-  const isOnVirtualWorkspace = (mainWSUri &&
-    mainWSUri.scheme === 'vscode-vfs' &&
-    mainWSUri.authority.match(/^github\+?/))
+  const isOnVirtualWorkspace = (mainWSFolderUri &&
+    mainWSFolderUri.scheme === 'vscode-vfs' &&
+    mainWSFolderUri.authority.match(/^github\+?/))
 
   // this is essentially equivalent as above, except that you can change it to true on desktop
   // to try out the remote repository behavior
@@ -89,9 +56,9 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
   const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
   const fs = { promises: fsp }
 
-  const extraOpts: Record<string, string> = {}
+  const isoGitBaseOpts: IsoGitBaseOptions = { fs, http }
   if (vscode.env.uiKind === vscode.UIKind.Web) {
-    extraOpts.corsProxy = 'https://cors.isomorphic-git.org'
+    isoGitBaseOpts.corsProxy = 'https://cors.isomorphic-git.org'
   }
 
   function mountAuxWorkspaceFolder() {
@@ -113,7 +80,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
   type VscodeWithProgressTask = Parameters<typeof vscode.window.withProgress>[1]
   type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
 
-  function createProgressReporter(progress: VscodeProgressContext) {
+  function createIsoGitProgressReporter(progress: VscodeProgressContext) {
     let percentage = 0
 
     let lastUpdatingWorkdir = -1
@@ -176,7 +143,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       httpUrl = 'https://github.com/' + mat[1]
     }
 
-    const titleMsg = mod.path === mod.name ? `"${mod.path}/"` : `"${mod.name}" to "${mod.path}/"`
+    const titleMsg = mod.path === mod.name ? `"${mod.name}"` : `"${mod.name}" to "${mod.path}"`
 
     await vscode.window.withProgress({
       title: `Cloning submodule ${titleMsg}`,
@@ -184,7 +151,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       cancellable: false,
     }, async (progress, _token) => {
       await git.clone({
-        fs, http, ...extraOpts,
+        ...isoGitBaseOpts,
         url: httpUrl,
         singleBranch: true,
         depth: 1,
@@ -192,7 +159,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         ...spec,
         batchSize: 128,
         nonBlocking: true,
-        onProgress: createProgressReporter(progress),
+        onProgress: createIsoGitProgressReporter(progress),
       })
     })
 
@@ -212,8 +179,8 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     // when opening a GitHub repo on vscode.dev, we need to rebuild the .git folder
     if (isOnVirtualWorkspace && !hasInTreeGitDir && !hasGitDir) {
       let ref = undefined
-      if (mainWSUri.authority.length > 6 /* "github+"... */) {
-        const decoded = hexToAscii(mainWSUri.authority.slice(7))
+      if (mainWSFolderUri.authority.length > 6 /* "github+"... */) {
+        const decoded = hexToAscii(mainWSFolderUri.authority.slice(7))
         // TODO: figure out different types
         const refInfo = JSON.parse(decoded) as { v: string, ref: { type: number, id: string } }
         ref = refInfo.ref.id
@@ -225,26 +192,19 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         cancellable: false,
       }, progress => {
         return git.clone({
-          fs, http, ...extraOpts,
+          ...isoGitBaseOpts,
           dir: '',  // unused
           gitdir: '/gitdir',
-          url: 'https://github.com' + mainWSUri.path,
+          url: 'https://github.com' + mainWSFolderUri.path,
           ref,
           singleBranch: true,
           depth: 1,
           noCheckout: true,
-          onProgress: createProgressReporter(progress),
+          onProgress: createIsoGitProgressReporter(progress),
         })
       })
 
       hasGitDir = true
-    }
-
-    let gitlinks
-    try {
-    } catch (err: any) {
-      await vscode.window.showErrorMessage('Failed to find submodule gitlinks: ' + err.message)
-      return
     }
 
     // for reading, we prefer fallback-able so that it can be mocked
@@ -265,7 +225,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         const pathFromSubmodToGitDir = path.relative(`/${mod.path}`, `/.git/modules/${mod.name}`)
         await fsp.writeFile(
           path.join(dirSpec.dir, '.git'),
-          new TextEncoder().encode(`gitdir: ${pathFromSubmodToGitDir}\n`))
+          textEncode(`gitdir: ${pathFromSubmodToGitDir}\n`))
       }
 
       try {
