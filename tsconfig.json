@@ -16,7 +16,7 @@
     "types": ["node", "vscode"],
     "paths": {
       "$isogit-http": ["./node_modules/isomorphic-git/http/web"],
-      "$node-path": ["./node_modules/@types/path-browserify"]
+      "$node-path": ["./node_modules/pathe"]
     }
   },
   "include": [

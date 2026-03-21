@@ -29,7 +29,7 @@ const webOptions = {
   outfile: 'dist/web/extension.js',
   alias: {
     '$isogit-http': 'isomorphic-git/http/web',
-    '$node-path': 'path-browserify',
+    '$node-path': 'pathe',
   },
   inject: ['src/web-buffer.ts']
 }
