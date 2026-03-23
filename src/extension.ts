@@ -108,9 +108,10 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
   async function mountAuxWorkspaceFolders(workspaceRoot: Uri, options?: { gitdir?: boolean }) {
     if (!workspace.workspaceFile && isWeb()) {
-      const detail = 'This will create a workspace in the current session. On VS Code for the Web, workspaces are transient and may be lost if the page is closed. Proceed?'
+      const detail = 'This operation will create a new workspace in the current session. ' +
+        'On VS Code for the Web, workspaces are transient and may be lost if the page is closed. Proceed?'
       const resp = await window.showInformationMessage(
-        'Creating a workspace', { modal: true, detail }, 'OK', 'Cancel')
+        'Creating a workspace', { modal: true, detail }, 'OK')
       if (resp !== 'OK') {
         return false
       }
