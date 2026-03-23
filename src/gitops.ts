@@ -43,3 +43,61 @@ export async function findSubmoduleOid(fs: IsoGitAsyncFsPrimitive, gitdir: strin
     .catch(() => Promise.reject(new Error(`"${filepath}" does not exist in HEAD`)))
   return obj.type === 'commit' ? obj.oid : null
 }
+
+// XXX: if no checkout we may want a different set of progress estimations
+const gitClonePhases: Record<string, [number, number]> = {
+  'Counting objects':    [ 6,  3],
+  'Compressing objects': [ 9, 12],
+  'Receiving objects':   [21,  6],
+  'Resolving deltas':    [27,  9],
+  'Analyzing workdir':   [36, 18],
+  'Updating workdir':    [54,  6],
+  'Updating workdir2':   [60, 40],
+}
+
+type VscodeWithProgressTask = Parameters<typeof vscode.window.withProgress>[1]
+type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
+
+export function createIsoGitProgressReporter(progress: VscodeProgressContext) {
+  let percentage = 0
+
+  let lastUpdatingWorkdir = -1
+  let isUpdatingWorkdirSecondPhase = false
+
+  progress.report({ message: 'Initializing...' })
+
+  return async ({phase, loaded, total}: Parameters<git.ProgressCallback>[0]) => {
+    let cur = percentage
+    let phase_ = phase
+
+    // updating workdir has two phases;
+    // we switch to the next one upon seeing the process report rewind
+    if (phase == 'Updating workdir') {
+      if (isUpdatingWorkdirSecondPhase || (lastUpdatingWorkdir >= 0 && loaded < lastUpdatingWorkdir)) {
+        isUpdatingWorkdirSecondPhase = true
+        phase_ = 'Updating workdir2'
+      } else {
+        lastUpdatingWorkdir = loaded
+      }
+    }
+
+    const curPhase = gitClonePhases[phase_]
+    if (!curPhase) {
+      progress.report({ message: loaded != null ? `${phase}... (${loaded})` : phase })
+    } else {
+      let msg
+      const [base, span] = curPhase
+      if (loaded != null && total) {
+        const frac = Math.min(loaded / total, 1)
+        cur = base + span * frac
+        msg = `${phase}... (${(frac * 100).toFixed(1)}%, ${loaded}/${total})`
+      } else {
+        cur = base + span * .5
+        msg = loaded != null ? `${phase}... (${loaded})` : phase
+      }
+
+      progress.report({ message: msg, increment: Math.max(0, cur - percentage) })
+      percentage = cur
+    }
+  }
+}

@@ -48,7 +48,9 @@
     "watch": "node bin/esbuild.mjs --watch",
     "test": "true # (WIP)"
   },
-  "activationEvents": [],
+  "activationEvents": [
+    "onFileSystem:vscode-vfs"
+  ],
   "contributes": {
     "commands": [
       {
@@ -60,12 +62,19 @@
       {
         "category": "Git Submodule Cloner",
         "title": "Initialize and checkout submodules",
-        "command": "git-submodule-cloner.checkout-submodules"
+        "command": "git-submodule-cloner.checkout-submodules",
+        "enablement": "workbenchState != empty"
       },
       {
         "category": "Git Submodule Cloner",
         "title": "Add submodule store to workspace",
         "command": "git-submodule-cloner.add-submodules-to-workspace",
+        "enablement": "workbenchState != empty"
+      },
+      {
+        "category": "Git Submodule Cloner",
+        "title": "Show status of submodules...",
+        "command": "git-submodule-cloner.pick-submodules",
         "enablement": "workbenchState != empty"
       }
     ],
@@ -77,6 +86,18 @@
           "group": "7a_gitops"
         }
       ]
+    },
+    "configuration": {
+      "title": "Submodule cloner",
+      "type": "object",
+      "properties": {
+        "git-submodule-cloner.corsProxyUrl": {
+          "markdownDescription": "CORS proxy URL for connecting to GitHub. Only used in browser environments (e.g. VS Code for the Web, github.dev). [More information](https://github.com/isomorphic-git/isomorphic-git/blob/main/README.md#cors-support).",
+          "type": "string",
+          "scope": "resource",
+          "default": "https://cors.isomorphic-git.org"
+        }
+      }
     }
   }
 }

@@ -3,158 +3,132 @@ import vscode, { window, commands, workspace, Uri } from 'vscode'
 import git, { type ProgressCallback } from 'isomorphic-git'
 import http from '$isogit-http'
 import path from '$node-path'
-import { createIsoGitAsyncFs, exists, type IsoGitAsyncFsPrimitive } from './fs'
+import { createIsoGitAsyncFs, exists } from './fs'
 import { type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii, textEncode } from './utils'
-import { findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
+import { createIsoGitProgressReporter, findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
+import { getWorkspaceId } from './workspace-id'
+import {
+  folderIsGitHubRemoteRepo,
+  maybeChooseWSFolderUri,
+  appendWorkspaceFolders,
+  isWeb,
+} from './vsc-utils'
 
-// XXX: if no checkout we may want a different set of progress estimations
-const gitClonePhases: Record<string, [number, number]> = {
-  'Counting objects':    [ 6,  3],
-  'Compressing objects': [ 9, 12],
-  'Receiving objects':   [21,  6],
-  'Resolving deltas':    [27,  9],
-  'Analyzing workdir':   [36, 18],
-  'Updating workdir':    [54,  6],
-  'Updating workdir2':   [60, 40],
+function getScopedGlobalStorageUri(context: ExtensionContext, root: Uri): Uri {
+  if (!folderIsGitHubRemoteRepo(root)) {
+    return context.storageUri!
+  }
+  const id = getWorkspaceId(root)
+  return Uri.joinPath(context.globalStorageUri!, id)
 }
 
-function isVirtualWorkspace(uri: Uri) {
-  return uri.scheme === 'vscode-vfs' && uri.authority.match(/^github\+?/)
+function makeContextFromWorkspaceFolder(context: ExtensionContext, root: Uri) {
+  const isOnVirtualWorkspace = root && folderIsGitHubRemoteRepo(root)
+
+  // this is essentially equivalent as above, except that you can change it to true on desktop
+  // to try out the remote repository behavior
+  const isCloningOutOfTree = isOnVirtualWorkspace
+
+  const scopedStorageUri = getScopedGlobalStorageUri(context, root)
+
+  function resolvePath(path: string): Uri {
+    let mat: RegExpMatchArray | null
+    if (mat = path.match(/^\/workspace(|\/.*)$/)) {
+      return Uri.joinPath(root, mat[1]!)
+    }
+    if (mat = path.match(/^\/gitdir(|\/.*)$/)) {
+      return isCloningOutOfTree ?
+        Uri.joinPath(scopedStorageUri, 'gitdir', mat[1]!) :
+        Uri.joinPath(root, '.git', mat[1]!)
+    }
+    if (mat = path.match(/^\/store(|\/.*)$/)) {
+      return Uri.joinPath(isCloningOutOfTree ? scopedStorageUri : root, mat[1]!)
+    }
+    throw new Error(`Could not match path prefix from: "${path}"`)
+  }
+
+  const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
+
+  const isoGitBaseOpts: IsoGitBaseOptions = { fs: { promises: fsp }, http }
+  if (isWeb()) {
+    const config = workspace.getConfiguration('git-submodule-cloner')
+    isoGitBaseOpts.corsProxy = config.get('corsProxyUrl', 'https://cors.isomorphic-git.org')
+  }
+
+  function getDirSpec(mod: GitSubmoduleSpec) {
+    return isCloningOutOfTree ?
+      { oot: true  as const, dir: `/store/submodules/${mod.name}`, gitdir: undefined } :
+      { oot: false as const, dir: `/workspace/${mod.path}`,        gitdir: `/gitdir/modules/${mod.name}` }
+  }
+
+  return {
+    isOnVirtualWorkspace,
+    isCloningOutOfTree,
+    resolvePath,
+    getDirSpec,
+    fsp,
+    isoGitBaseOpts,
+  }
 }
 
-function maybeChooseWSFolderUri(): Uri | PromiseLike<Uri | null> {
-  function _inner() {
-    const fos = workspace.workspaceFolders
-    if (!fos?.length) {
-      throw new Error('No workspace folder to work on.')
-    }
+type ContextExt = ReturnType<typeof makeContextFromWorkspaceFolder>
 
-    function ensureUri(uri: Uri | undefined, main = false): Uri {
-      if (!uri) {
-        throw new Error(`Failed to get URI of the ${main ? 'main' : 'specified'} workspace folder.`)
-      }
-      return uri
-    }
+function registerCommandWithActiveWSFolder<T>(
+  context: ExtensionContext,
+  name: string,
+  handler: (contextExt: ContextExt, uri: Uri, ...args: any[]) => Promise<T>,
+  thisArg?: any) {
 
-    if (fos.length == 1) return ensureUri(fos[0]!.uri, true)
+  context.subscriptions.push(commands.registerCommand(name, async (maybeUri?: Uri, ...args: unknown[]) => {
+    const _wsfuri = maybeUri ?? maybeChooseWSFolderUri()
+    const wsfuri = 'then' in _wsfuri ? await _wsfuri : _wsfuri
+    if (!wsfuri) return
 
-    // maybe roll my own to exclude aux dirs
-    return window.showWorkspaceFolderPick({
-      placeHolder: 'Choose a workspace folder to work on...'
-    }).then(x => {
-      return x ? ensureUri(x.uri) : null
-    })
-  }
-
-  try { return _inner() } catch (err: any) {
-    return window.showErrorMessage(err.message).then(() => null)
-  }
+    const extctx = makeContextFromWorkspaceFolder(context, wsfuri)
+    return handler(extctx, wsfuri, ...args)
+  }, thisArg))
 }
 
 export async function activate(context: ExtensionContext): Promise<ExtensionExports> {
-  function makeContextFromWorkspaceFolder(root: Uri) {
-    const isOnVirtualWorkspace = root && isVirtualWorkspace(root)
-
-    // this is essentially equivalent as above, except that you can change it to true on desktop
-    // to try out the remote repository behavior
-    const isCloningOutOfTree = isOnVirtualWorkspace
-
-    function resolvePath(path: string): Uri {
-      let mat: RegExpMatchArray | null
-      if (mat = path.match(/^\/workspace(|\/.*)$/)) {
-        return Uri.joinPath(root, mat[1]!)
-      }
-      if (mat = path.match(/^\/gitdir(|\/.*)$/)) {
-        return isCloningOutOfTree ?
-          Uri.joinPath(context.storageUri!, 'gitdir', mat[1]!) :
-          Uri.joinPath(root, '.git', mat[1]!)
-      }
-      if (mat = path.match(/^\/store(|\/.*)$/)) {
-        return Uri.joinPath(isCloningOutOfTree ? context.storageUri! : root, mat[1]!)
-      }
-      throw new Error(`Could not match path prefix from: "${path}"`)
-    }
-
-    const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
-
-    const isoGitBaseOpts: IsoGitBaseOptions = { fs: { promises: fsp }, http }
-    if (vscode.env.uiKind === vscode.UIKind.Web) {
-      isoGitBaseOpts.corsProxy = 'https://cors.isomorphic-git.org'
-    }
+  function getWorkspaceAuxFolderDescs(root: Uri) {
+    const uriBase = getScopedGlobalStorageUri(context, root)
 
     return {
-      isOnVirtualWorkspace,
-      isCloningOutOfTree,
-      resolvePath,
-      fsp,
-      isoGitBaseOpts,
+      gitdir: {
+        name: '⚙️ Workspace .git directory',
+        uri: Uri.joinPath(uriBase, 'gitdir'),
+      },
+      submodules: {
+        name: '⚙️ Workspace submodules',
+        uri: Uri.joinPath(uriBase, 'submodules'),
+      },
     }
   }
 
-  function mountAuxWorkspaceFolders() {
-    if (context.storageUri == null) {
-      throw new Error('no workspace is set')
+  async function mountAuxWorkspaceFolders(workspaceRoot: Uri, options?: { gitdir?: boolean }) {
+    if (!workspace.workspaceFile && isWeb()) {
+      const detail = 'This will create a workspace in the current session. On VS Code for the Web, workspaces are transient and may be lost if the page is closed. Proceed?'
+      const resp = await window.showInformationMessage(
+        'Creating a workspace', { modal: true, detail }, 'OK', 'Cancel')
+      if (resp !== 'OK') {
+        return false
+      }
     }
-    const ok = vscode.workspace.updateWorkspaceFolders(
-      vscode.workspace.workspaceFolders?.length ?? 0, 0,
-      // vscode.env.uiKind === vscode.UIKind.Web ?
+
+    const descs = getWorkspaceAuxFolderDescs(workspaceRoot)
+
+    const ok = await appendWorkspaceFolders([
+      // isWeb() ?
       //   { name: 'VS Code user data', uri: vscode.Uri.parse('vscode-userdata:/') } :
       //   { name: 'Extension storage', uri: context.globalStorageUri },
-      { name: 'Workspace .git directory', uri: Uri.joinPath(context.storageUri, 'gitdir') },
-      { name: 'Workspace submodules', uri: Uri.joinPath(context.storageUri, 'submodules') },
-    )
+      options?.gitdir && descs.gitdir,
+      descs.submodules,
+    ].filter(x => !!x))
     if (!ok) {
       // console.warn('updateWorkspaceFolders returns false')
     }
-    commands.executeCommand('revealInExplorer', context.storageUri)
-  }
-
-  type VscodeWithProgressTask = Parameters<typeof window.withProgress>[1]
-  type VscodeProgressContext = Parameters<VscodeWithProgressTask>[0]
-
-  function createIsoGitProgressReporter(progress: VscodeProgressContext) {
-    let percentage = 0
-
-    let lastUpdatingWorkdir = -1
-    let isUpdatingWorkdirSecondPhase = false
-
-    progress.report({ message: 'Initializing...' })
-
-    return async ({phase, loaded, total}: Parameters<ProgressCallback>[0]) => {
-      let cur = percentage
-      let phase_ = phase
-
-      // updating workdir has two phases;
-      // we switch to the next one upon seeing the process report rewind
-      if (phase == 'Updating workdir') {
-        if (isUpdatingWorkdirSecondPhase || (lastUpdatingWorkdir >= 0 && loaded < lastUpdatingWorkdir)) {
-          isUpdatingWorkdirSecondPhase = true
-          phase_ = 'Updating workdir2'
-        } else {
-          lastUpdatingWorkdir = loaded
-        }
-      }
-
-      const curPhase = gitClonePhases[phase_]
-      if (!curPhase) {
-        progress.report({ message: loaded != null ? `${phase}... (${loaded})` : phase })
-      } else {
-        let msg
-        const [base, span] = curPhase
-        if (loaded != null && total) {
-          const frac = Math.min(loaded / total, 1)
-          cur = base + span * frac
-          msg = `${phase}... (${(frac * 100).toFixed(1)}%, ${loaded}/${total})`
-        } else {
-          cur = base + span * .5
-          msg = loaded != null ? `${phase}... (${loaded})` : phase
-        }
-
-        progress.report({ message: msg, increment: Math.max(0, cur - percentage) })
-        percentage = cur
-      }
-    }
+    return ok
   }
 
   interface CloneSubmoduleSpec {
@@ -199,12 +173,25 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     return { httpUrl, titleMsg }
   }
 
-  context.subscriptions.push(commands.registerCommand('git-submodule-cloner.checkout-submodules', async (maybeUri?: Uri) => {
-    const _wsfuri = maybeUri ?? maybeChooseWSFolderUri()
-    const wsfuri = 'then' in _wsfuri ? await _wsfuri : _wsfuri
-    if (!wsfuri) return
+  // auto mount if we are in a remote repository AND there is an untitled workspace
+  // TODO: remember the last choice
+  if (workspace.workspaceFolders?.length &&
+      folderIsGitHubRemoteRepo(workspace.workspaceFolders[0]!.uri)) {
 
-    const { isoGitBaseOpts, isOnVirtualWorkspace, isCloningOutOfTree, fsp } = makeContextFromWorkspaceFolder(wsfuri)
+    const wsf = workspace.workspaceFolders[0]!.uri
+
+    const shouldAutoMount = workspace.workspaceFile != null && await workspace.fs.stat(
+      Uri.joinPath(getScopedGlobalStorageUri(context, wsf), 'submodules'))
+        .then(() => true, () => false)
+    if (shouldAutoMount) {
+      const ok = await mountAuxWorkspaceFolders(wsf)
+      if (ok) window.showInformationMessage(
+        'Detected a virtual workspace with submodules cloned previously. It is now added to workspace.')
+    }
+  }
+
+  registerCommandWithActiveWSFolder(context, 'git-submodule-cloner.checkout-submodules', async (extctx, wsfuri) => {
+    const { fsp, isOnVirtualWorkspace, isCloningOutOfTree, getDirSpec, isoGitBaseOpts } = extctx
 
     const gitmodules = await readGitModules(fsp, '/workspace').catch(err => {
       window.showErrorMessage(err.message)
@@ -228,7 +215,6 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       await window.withProgress({
         title: 'Rebuilding .git for this workspace',
         location: vscode.ProgressLocation.Notification,
-        cancellable: false,
       }, progress => {
         return git.clone({
           ...isoGitBaseOpts,
@@ -249,65 +235,162 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     // for reading, we prefer fallback-able so that it can be mocked
     // the "isCloningOutOfTree" does not yet make sense at this point
     // XXX: which should be honored first?
-    const gitdirForReading = hasInTreeGitDir ? '/workspace/.git' : '/gitdir'
+    const gitdirForReading = hasInTreeGitDir ? '/workspace/.git' : hasGitDir ? '/gitdir' : null
 
-    for (const mod of gitmodules) {
-      const oid = await findSubmoduleOid(fsp, gitdirForReading, mod.path)
-      if (oid == null) throw new Error(`Could not find ref in parent project of submodule "${mod.name}"`)
+    if (!gitdirForReading) {
+      window.showErrorMessage('Failed to probe .git folder for workspace.', { modal: true })
+      return
+    }
 
-      const dirSpec = isCloningOutOfTree ?
-        { oot: true  as const, dir: `/store/submodules/${mod.name}`, gitdir: undefined } :
-        { oot: false as const, dir: `/workspace/${mod.path}`,        gitdir: `/gitdir/modules/${mod.name}` }
+    let cnt = 0
+    const total = gitmodules.length
+    await window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: `Cloning ${total} ${total === 1 ? 'module' : 'modules'}`,
+    }, async (progress, token) => {
+      progress.report({ message: `(0/${total})`, increment: 0 })
 
-      if (!dirSpec.oot) {
-        await fsp.mkdir(dirSpec.gitdir)
-        const pathFromSubmodToGitDir = path.relative(`/${mod.path}`, `/.git/modules/${mod.name}`)
-        await fsp.writeFile(
-          path.join(dirSpec.dir, '.git'),
-          textEncode(`gitdir: ${pathFromSubmodToGitDir}\n`))
-      }
-
-      try {
-        const { httpUrl, titleMsg } = await cloneSubmodule(isoGitBaseOpts, {
-          mod,
-          ref: oid,
-          dir: dirSpec.dir,
-          gitdir: dirSpec.gitdir,
-        })
-
-        if (hasInTreeGitDir && !isCloningOutOfTree) {
-          const fs = { promises: fsp }
-          // record it for canonical-git compatibility
-          await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
-          await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
+      for (let i = 0; i < total; i++) {
+        if (token.isCancellationRequested) {
+          break
         }
 
-        window.showInformationMessage(`Cloned submodule ${titleMsg}.`)
-      } catch (err: any) {
-        console.error(err)
-        window.showErrorMessage(`Encountered error cloning "${mod.name}": ${err.message}`)
+        const mod = gitmodules[i]!
+        const oid = await findSubmoduleOid(fsp, gitdirForReading, mod.path)
+        if (oid == null) throw new Error(`Could not find ref in parent project of submodule "${mod.name}"`)
+
+        const dirSpec = getDirSpec(mod)
+        if (!dirSpec.oot) {
+          await fsp.mkdir(dirSpec.gitdir)
+          const pathFromSubmodToGitDir = path.relative(`/${mod.path}`, `/.git/modules/${mod.name}`)
+          await fsp.writeFile(
+            path.join(dirSpec.dir, '.git'),
+            textEncode(`gitdir: ${pathFromSubmodToGitDir}\n`))
+        }
+
+        try {
+          const { httpUrl, titleMsg } = await cloneSubmodule(isoGitBaseOpts, {
+            mod,
+            ref: oid,
+            dir: dirSpec.dir,
+            gitdir: dirSpec.gitdir,
+          })
+
+          if (hasInTreeGitDir && !isCloningOutOfTree) {
+            const fs = { promises: fsp }
+            // record it for canonical-git compatibility
+            await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.active`, value: true })
+            await git.setConfig({ fs, gitdir: '/gitdir', path: `submodule.${mod.name}.url`, value: httpUrl })
+          }
+
+          cnt++
+          progress.report({ message: `(${cnt}/${total}) Cloned ${titleMsg}`, increment: 100 / total })
+        } catch (err: any) {
+          console.error(err)
+          window.showErrorMessage(`Encountered error cloning "${mod.name}": ${err.message}`)
+        }
       }
-    }
+    })
+
+    window.showInformationMessage(`Successfully cloned ${cnt}/${gitmodules.length} ${cnt === 1 ? 'module' : 'modules'}`)
 
     if (isCloningOutOfTree) {
-      mountAuxWorkspaceFolders()
+      const ok = await mountAuxWorkspaceFolders(wsfuri)
+      if (ok) await commands.executeCommand('workbench.files.action.refreshFilesExplorer')
     }
-  }))
+  })
 
-  context.subscriptions.push(commands.registerCommand('git-submodule-cloner.add-submodules-to-workspace', async () => {
-    if (context.storageUri == null) {
-      window.showErrorMessage('No workspace is opened.')
+  registerCommandWithActiveWSFolder(context, 'git-submodule-cloner.add-submodules-to-workspace', async (_extctx, wsfuri) => {
+    if (!folderIsGitHubRemoteRepo(wsfuri)) {
+      return window.showErrorMessage('Selected workspace folder is not a GitHub remote repository.', { modal: true })
+    }
+
+    const descs = getWorkspaceAuxFolderDescs(wsfuri)
+    if (workspace.getWorkspaceFolder(descs.submodules.uri)) {
+      return window.showInformationMessage('Submodule store for this workspace was already mounted.')
+    }
+
+    const ok = await mountAuxWorkspaceFolders(wsfuri, { gitdir: true })
+    if (ok) return window.showInformationMessage('Added the submodule store to the workspace.')
+  })
+
+  // TODO: factor it out so that it can be combined with git operations
+  registerCommandWithActiveWSFolder(context, 'git-submodule-cloner.pick-submodules', async (extctx) => {
+    const { fsp, getDirSpec } = extctx
+
+    if (!(await fsp.stat('/workspace/.gitmodules').catch(() => null))) {
+      window.showErrorMessage('No .gitmodules found')
       return
     }
 
-    if (workspace.getWorkspaceFolder(context.storageUri)) {
-      window.showInformationMessage('Submodule store for this workspace was already mounted.')
-      return
+    interface QuickPickItemSubmod extends QuickPickItem {
+      commitHash?: string
+      url: string
     }
 
-    mountAuxWorkspaceFolders()
-    window.showInformationMessage('Added the submodule store to the workspace.')
-  }))
+    const itemSource = readGitModules(fsp, '/workspace')
+      .then(xs => Promise.all(xs.map<Promise<QuickPickItemSubmod>>(async mod => {
+        const oid = await findSubmoduleOid(fsp, '/gitdir', mod.name)
+        const dirSpec = getDirSpec(mod)
+        const pathToDotGit = dirSpec.gitdir ?? path.join(dirSpec.dir, '.git')
+        // is this submodule ready? (not to be confused with "active")
+        const dotgit = await fsp.stat(pathToDotGit).catch(() => false)
+        return {
+          iconPath: { id: dotgit ? 'repo' : 'dash' },
+          label: mod.name,
+          description: mod.name !== mod.path ? mod.path : '',
+          detail: (oid ?? 'N/A') + (dotgit ? ' (cloned)' : ''),
+          url: mod.url,
+          commitHash: oid ?? undefined,
+          buttons: [
+            oid && { id: 'gotoSubmoduleUri', iconPath: { id: 'link' }, tooltip: 'Goto submodule URL' },
+            oid && { id: 'copyCommitHash', iconPath: { id: 'copy' }, tooltip: 'Copy commit hash' },
+          ].filter(x => !!x),
+        }
+      })))
+      .catch(err => {
+        window.showErrorMessage(err.message)
+        return []
+      })
+
+    const pickingAction = new Promise<readonly QuickPickItemSubmod[] | undefined>((resolve) => {
+      const qp = window.createQuickPick<QuickPickItemSubmod>()
+      qp.ignoreFocusOut = true
+      qp.busy = true
+      qp.items = []
+      qp.placeholder = 'Pick submodules...'
+      qp.canSelectMany = true
+      itemSource.then(xs => {
+        qp.items = xs
+        qp.busy = false
+      })
+      qp.onDidTriggerItemButton(async evt => {
+        const { id } = evt.button as any
+        if (id === 'copyCommitHash') {
+          if (evt.item.commitHash) {
+            await vscode.env.clipboard.writeText(evt.item.commitHash)
+            window.showInformationMessage('Copied')
+          }
+        } else if (id === 'gotoSubmoduleUri') {
+          if (evt.item.url) {
+            const ok = await vscode.env.openExternal(Uri.parse(evt.item.url))
+            if (!ok) {
+              window.showErrorMessage(`Cannot goto "${evt.item.url}"`)
+            }
+          }
+        }
+      })
+      qp.onDidAccept(() => {
+        resolve(qp.selectedItems)
+        qp.hide()
+      })
+      qp.show()
+    })
+
+    const picked = await pickingAction
+    window.showInformationMessage(`You picked ${picked?.map(x => x.label).join(' && ') || 'nothing'}`)
+    return picked
+  })
 
   return {}
 }
