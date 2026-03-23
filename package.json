@@ -86,6 +86,11 @@
           "command": "git-submodule-cloner.checkout-submodules",
           "when": "explorerResourceIsRoot",
           "group": "7a_gitops"
+        },
+        {
+          "command": "git-submodule-cloner.pick-submodules",
+          "when": "explorerResourceIsRoot",
+          "group": "7a_gitops"
         }
       ]
     },

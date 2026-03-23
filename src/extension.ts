@@ -158,6 +158,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       location: vscode.ProgressLocation.Notification,
       cancellable: false,
     }, async (progress, _token) => {
+      // TODO: if the commit exists in local, only do a checkout
       await git.clone({
         ...isoGitBaseOpts,
         url: httpUrl,
@@ -245,9 +246,11 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
     let cnt = 0
     const total = gitmodules.length
+    const failedNames: {name: string, reason: string}[] = []
     await window.withProgress({
       location: vscode.ProgressLocation.Notification,
       title: `Cloning ${total} ${total === 1 ? 'module' : 'modules'}`,
+      cancellable: true,
     }, async (progress, token) => {
       progress.report({ message: `(0/${total})`, increment: 0 })
 
@@ -288,12 +291,23 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
           progress.report({ message: `(${cnt}/${total}) Cloned ${titleMsg}`, increment: 100 / total })
         } catch (err: any) {
           console.error(err)
+          failedNames.push({ name: mod.name, reason: err.message })
           window.showErrorMessage(`Encountered error cloning "${mod.name}": ${err.message}`)
         }
       }
     })
 
-    window.showInformationMessage(`Successfully cloned ${cnt}/${gitmodules.length} ${cnt === 1 ? 'module' : 'modules'}`)
+    if (!failedNames.length) {
+      window.showInformationMessage(`Successfully cloned ${cnt}/${total} ${total === 1 ? 'module' : 'modules'}.`)
+    } else {
+      // XXX: allow to retry with force
+      window.showWarningMessage(
+        `Successfully cloned ${cnt}/${total} ${total === 1 ? 'module' : 'modules'}.`,
+        {
+          modal: true,
+          detail: `Failed submodules are: ${failedNames.map(({name, reason}) => `${name}: ${reason}`).join(', ')}`,
+        })
+    }
 
     if (isCloningOutOfTree) {
       const ok = await mountAuxWorkspaceFolders(wsfuri)
@@ -332,6 +346,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     const itemSource = readGitModules(fsp, '/workspace')
       .then(xs => Promise.all(xs.map<Promise<QuickPickItemSubmod>>(async mod => {
         const oid = await findSubmoduleOid(fsp, '/gitdir', mod.name)
+        // FIXME: distinguish cloned/checked-out in local setup
         const dirSpec = getDirSpec(mod)
         const pathToDotGit = dirSpec.gitdir ?? path.join(dirSpec.dir, '.git')
         // is this submodule ready? (not to be confused with "active")
@@ -383,7 +398,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       })
       qp.onDidAccept(() => {
         resolve(qp.selectedItems)
-        qp.hide()
+        qp.dispose()
       })
       qp.show()
     })
