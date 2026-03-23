@@ -10,6 +10,7 @@
   "categories": [
     "Other"
   ],
+  "icon": "assets/icon.png",
   "keywords": [
     "git",
     "submodules",
@@ -25,7 +26,8 @@
   "files": [
     "LICENSE",
     "CHANGELOG.md",
-    "dist/"
+    "dist/",
+    "assets/icon.png"
   ],
   "dependencies": {
     "buffer": "^6.0.3",
