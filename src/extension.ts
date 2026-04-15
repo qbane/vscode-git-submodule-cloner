@@ -7,7 +7,7 @@ import { createIsoGitAsyncFs, exists } from './fs'
 import { type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii, textEncode } from './utils'
 import { createIsoGitProgressReporter, findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
-import { getWorkspaceId } from './workspace-id'
+import { getWorkspaceId } from './vendor/workspace-id'
 import {
   folderIsGitHubRemoteRepo,
   maybeChooseWSFolderUri,
