@@ -305,7 +305,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         `Successfully cloned ${cnt}/${total} ${total === 1 ? 'module' : 'modules'}.`,
         {
           modal: true,
-          detail: `Failed submodules are: ${failedNames.map(({name, reason}) => `${name}: ${reason}`).join(', ')}`,
+          detail: `Failed submodules are: ${failedNames.map(({name, reason}) => `${name}: ${reason}`).join('\n')}`,
         })
     }
 
@@ -331,7 +331,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
   // TODO: factor it out so that it can be combined with git operations
   registerCommandWithActiveWSFolder(context, 'git-submodule-cloner.pick-submodules', async (extctx) => {
-    const { fsp, getDirSpec } = extctx
+    const { fsp, getDirSpec, isoGitBaseOpts } = extctx
 
     if (!(await fsp.stat('/workspace/.gitmodules').catch(() => null))) {
       window.showErrorMessage('No .gitmodules found')
@@ -339,35 +339,46 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     }
 
     interface QuickPickItemSubmod extends QuickPickItem {
+      // have this submodule been checked out from gitdir? always true if in out-of-tree mode
+      isCheckedOut: boolean | undefined
       commitHash?: string
       url: string
+      updateDescription(): void
     }
 
-    const itemSource = readGitModules(fsp, '/workspace')
-      .then(xs => Promise.all(xs.map<Promise<QuickPickItemSubmod>>(async mod => {
+    const submods = await readGitModules(fsp, '/workspace')
+      .catch(err => {
+        window.showErrorMessage(err.message)
+        return []
+      })
+
+    const itemSource = Promise.all(
+      submods.map(async mod => {
         const oid = await findSubmoduleOid(fsp, '/gitdir', mod.name)
-        // FIXME: distinguish cloned/checked-out in local setup
         const dirSpec = getDirSpec(mod)
         const pathToDotGit = dirSpec.gitdir ?? path.join(dirSpec.dir, '.git')
         // is this submodule ready? (not to be confused with "active")
-        const dotgit = await fsp.stat(pathToDotGit).catch(() => false)
-        return {
-          iconPath: { id: dotgit ? 'repo' : 'dash' },
+        const dotgitExists = await fsp.stat(pathToDotGit).then(x => !!x).catch(() => false)
+        const isCheckedOut = dirSpec.oot ? true : dotgitExists ? undefined : false
+        const item: QuickPickItemSubmod = {
           label: mod.name,
-          description: mod.name !== mod.path ? mod.path : '',
-          detail: (oid ?? 'N/A') + (dotgit ? ' (cloned)' : ''),
+          detail: mod.name !== mod.path ? mod.path : undefined,
           url: mod.url,
+          isCheckedOut,
           commitHash: oid ?? undefined,
           buttons: [
             oid && { id: 'gotoSubmoduleUri', iconPath: { id: 'link' }, tooltip: 'Goto submodule URL' },
             oid && { id: 'copyCommitHash', iconPath: { id: 'copy' }, tooltip: 'Copy commit hash' },
           ].filter(x => !!x),
+          updateDescription() {
+            const c = this.isCheckedOut
+            this.iconPath = { id: !dotgitExists ? 'dash' : (c ? 'repo' : c === false ? 'add' : 'ellipsis') }
+            this.description = (oid?.slice(0, 8) ?? 'N/A') + (c ? ' (cloned)' : c === false ? ' (only fetched)' : '')
+          },
         }
-      })))
-      .catch(err => {
-        window.showErrorMessage(err.message)
-        return []
-      })
+        item.updateDescription()
+        return item
+      }))
 
     const pickingAction = new Promise<readonly QuickPickItemSubmod[] | undefined>((resolve) => {
       const qp = window.createQuickPick<QuickPickItemSubmod>()
@@ -376,10 +387,41 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       qp.items = []
       qp.placeholder = 'Pick submodules...'
       qp.canSelectMany = true
+
+      let isDisposed = false
+
       itemSource.then(xs => {
         qp.items = xs
         qp.busy = false
+      }).then(() => {
+        // serialize to make it less resource intensive
+        submods.reduce(async (pp, mod, idx) => {
+          if (isDisposed) return
+
+          await pp
+          const dirSpec = getDirSpec(mod)
+          const statuses = await git.statusMatrix({
+            ...isoGitBaseOpts,
+            dir: dirSpec.dir,
+            gitdir: dirSpec.gitdir,
+          })
+          // the most crude way to determine if the workdir is not empty
+          const isCheckedOut = statuses.some(([, _h, w, _s]) => w !== 0)
+          const item = qp.items[idx]!
+          item.isCheckedOut = isCheckedOut
+          item.updateDescription()
+          updateItemSource()
+        }, Promise.resolve())
       })
+
+      function updateItemSource() {
+        // backup user states because setting items will reset them
+        const activeItem = qp.activeItems[0]
+        const selectedItems = qp.selectedItems
+        qp.items = qp.items
+        Object.assign(qp, { activeItems: [activeItem], selectedItems })
+      }
+
       qp.onDidTriggerItemButton(async evt => {
         const { id } = evt.button as any
         if (id === 'copyCommitHash') {
@@ -396,8 +438,15 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
           }
         }
       })
+      qp.onDidHide(() => {
+        resolve([])
+        // XXX: should I?
+        isDisposed = true
+        qp.dispose()
+      })
       qp.onDidAccept(() => {
         resolve(qp.selectedItems)
+        isDisposed = true
         qp.dispose()
       })
       qp.show()
