@@ -158,18 +158,44 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       location: vscode.ProgressLocation.Notification,
       cancellable: false,
     }, async (progress, _token) => {
-      // TODO: if the commit exists in local, only do a checkout
-      await git.clone({
+      // if the commit exists in local, only do a checkout
+      // FIXME: this is wrong
+
+      const resolvedCommit = await git.resolveRef({
         ...isoGitBaseOpts,
-        url: httpUrl,
-        singleBranch: true,
-        depth: 1,
-        // noCheckout: false,
         ...spec,
-        batchSize: 128,
-        nonBlocking: true,
-        onProgress: createIsoGitProgressReporter(progress),
-      })
+      }).then(oid =>
+        git.readCommit({
+          ...isoGitBaseOpts,
+          ...spec,
+          oid,
+        })
+      ).catch(() => null)
+
+      if (resolvedCommit) {
+        await git.checkout({
+          ...isoGitBaseOpts,
+          ...spec,
+          // XXX: iso-git does not check working tree's modifications if force is false;
+          // we want this to also checkout/restore deleted files, but using force may also discard
+          // user's intentional edits
+          force: true,
+          onProgress: createIsoGitProgressReporter(progress),
+        })
+        const data = await isoGitBaseOpts.fs.promises.readdir(spec.dir)
+      } else {
+        await git.clone({
+          ...isoGitBaseOpts,
+          url: httpUrl,
+          singleBranch: true,
+          depth: 1,
+          // noCheckout: false,
+          ...spec,
+          batchSize: 128,
+          nonBlocking: true,
+          onProgress: createIsoGitProgressReporter(progress),
+        })
+      }
     })
 
     return { httpUrl, titleMsg }
@@ -305,7 +331,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         `Successfully cloned ${cnt}/${total} ${total === 1 ? 'module' : 'modules'}.`,
         {
           modal: true,
-          detail: `Failed submodules are: ${failedNames.map(({name, reason}) => `${name}: ${reason}`).join('\n')}`,
+          detail: `Failed submodules are:\n${failedNames.map(({name, reason}) => `${name}: ${reason}`).join('\n')}`,
         })
     }
 
@@ -343,7 +369,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       isCheckedOut: boolean | undefined
       commitHash?: string
       url: string
-      updateDescription(): void
+      updateView(): void
     }
 
     const submods = await readGitModules(fsp, '/workspace')
@@ -358,8 +384,8 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         const dirSpec = getDirSpec(mod)
         const pathToDotGit = dirSpec.gitdir ?? path.join(dirSpec.dir, '.git')
         // is this submodule ready? (not to be confused with "active")
-        const dotgitExists = await fsp.stat(pathToDotGit).then(x => !!x).catch(() => false)
-        const isCheckedOut = dirSpec.oot ? true : dotgitExists ? undefined : false
+        const dotgitReady = await fsp.stat(path.join(pathToDotGit, 'HEAD')).then(x => !!x).catch(() => false)
+        const isCheckedOut = dirSpec.oot ? true : dotgitReady ? undefined : false
         const item: QuickPickItemSubmod = {
           label: mod.name,
           detail: mod.name !== mod.path ? mod.path : undefined,
@@ -370,13 +396,22 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
             oid && { id: 'gotoSubmoduleUri', iconPath: { id: 'link' }, tooltip: 'Goto submodule URL' },
             oid && { id: 'copyCommitHash', iconPath: { id: 'copy' }, tooltip: 'Copy commit hash' },
           ].filter(x => !!x),
-          updateDescription() {
-            const c = this.isCheckedOut
-            this.iconPath = { id: !dotgitExists ? 'dash' : (c ? 'repo' : c === false ? 'add' : 'ellipsis') }
-            this.description = (oid?.slice(0, 8) ?? 'N/A') + (c ? ' (cloned)' : c === false ? ' (only fetched)' : '')
+          updateView() {
+            let spec: { icon: string, label: string }
+            if (!dotgitReady) {
+              spec = { icon: 'dash', label: 'not fetched' }
+            } else if (this.isCheckedOut === undefined) {
+              spec = { icon: 'ellipsis', label: 'loading...' }
+            } else if (this.isCheckedOut) {
+              spec = { icon: 'repo', label: 'cloned' }
+            } else {
+              spec = { icon: 'add', label: 'only fetched' }
+            }
+            this.iconPath = { id: spec.icon }
+            this.description = (oid?.slice(0, 8) ?? 'N/A') + ` (${spec.label})`
           },
         }
-        item.updateDescription()
+        item.updateView()
         return item
       }))
 
@@ -406,10 +441,11 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
             gitdir: dirSpec.gitdir,
           })
           // the most crude way to determine if the workdir is not empty
+          // TODO: probe modified or untracked contents
           const isCheckedOut = statuses.some(([, _h, w, _s]) => w !== 0)
           const item = qp.items[idx]!
           item.isCheckedOut = isCheckedOut
-          item.updateDescription()
+          item.updateView()
           updateItemSource()
         }, Promise.resolve())
       })
@@ -439,7 +475,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         }
       })
       qp.onDidHide(() => {
-        resolve([])
+        resolve(undefined)
         // XXX: should I?
         isDisposed = true
         qp.dispose()
@@ -453,7 +489,9 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     })
 
     const picked = await pickingAction
-    window.showInformationMessage(`You picked ${picked?.map(x => x.label).join(' && ') || 'nothing'}`)
+    if (picked != null) {
+      window.showInformationMessage(`You picked ${picked?.map(x => x.label).join(' && ') || 'nothing'}`)
+    }
     return picked
   })
 
