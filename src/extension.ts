@@ -1,25 +1,27 @@
-import type { ExtensionContext, QuickPickItem } from 'vscode'
+import type { ExtensionContext } from 'vscode'
 import vscode, { window, commands, workspace, Uri } from 'vscode'
-import git, { type ProgressCallback } from 'isomorphic-git'
+import git from 'isomorphic-git'
 import http from '$isogit-http'
 import path from '$node-path'
 import { createIsoGitAsyncFs, exists } from './fs'
 import { type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii, textEncode } from './utils'
 import { createIsoGitProgressReporter, findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
-import { getWorkspaceId } from './vendor/workspace-id'
 import {
   folderIsGitHubRemoteRepo,
   maybeChooseWSFolderUri,
   appendWorkspaceFolders,
   isWeb,
+  getCorsProxyURL,
 } from './vsc-utils'
+import type { ExtensionExports, QuickPickItemSubmod } from './types'
+import API from './api'
 
 function getScopedGlobalStorageUri(context: ExtensionContext, root: Uri): Uri {
   if (!folderIsGitHubRemoteRepo(root)) {
     return context.storageUri!
   }
-  const id = getWorkspaceId(root)
+  const id = API.getWorkspaceId(root)
   return Uri.joinPath(context.globalStorageUri!, id)
 }
 
@@ -51,9 +53,9 @@ function makeContextFromWorkspaceFolder(context: ExtensionContext, root: Uri) {
   const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
 
   const isoGitBaseOpts: IsoGitBaseOptions = { fs: { promises: fsp }, http }
-  if (isWeb()) {
-    const config = workspace.getConfiguration('git-submodule-cloner')
-    isoGitBaseOpts.corsProxy = config.get('corsProxyUrl', 'https://cors.isomorphic-git.org')
+  let corsProxy = getCorsProxyURL()
+  if (corsProxy != null) {
+    isoGitBaseOpts.corsProxy = corsProxy
   }
 
   function getDirSpec(mod: GitSubmoduleSpec) {
@@ -182,7 +184,6 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
           force: true,
           onProgress: createIsoGitProgressReporter(progress),
         })
-        const data = await isoGitBaseOpts.fs.promises.readdir(spec.dir)
       } else {
         await git.clone({
           ...isoGitBaseOpts,
@@ -364,14 +365,6 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       return
     }
 
-    interface QuickPickItemSubmod extends QuickPickItem {
-      // have this submodule been checked out from gitdir? always true if in out-of-tree mode
-      isCheckedOut: boolean | undefined
-      commitHash?: string
-      url: string
-      updateView(): void
-    }
-
     const submods = await readGitModules(fsp, '/workspace')
       .catch(err => {
         window.showErrorMessage(err.message)
@@ -495,5 +488,5 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     return picked
   })
 
-  return {}
+  return API
 }

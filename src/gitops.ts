@@ -66,7 +66,7 @@ export function createIsoGitProgressReporter(progress: VscodeProgressContext) {
 
   progress.report({ message: 'Initializing...' })
 
-  return async ({phase, loaded, total}: Parameters<git.ProgressCallback>[0]) => {
+  return ({phase, loaded, total}: Parameters<git.ProgressCallback>[0]) => {
     let cur = percentage
     let phase_ = phase
 
