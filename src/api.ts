@@ -21,10 +21,9 @@ export async function fetchServerRefInfo(url: string): Promise<ServerRefInfo> {
   const branches: RefEntry[] = []
   const tags: RefEntry[] = []
   const REFS_HEADS = 'refs/heads/'
+  const REFS_TAGS = 'refs/tags/'
 
   refs.forEach(({ref, oid, target}) => {
-
-    let mat: RegExpMatchArray | null
     if (ref === 'HEAD') {
       if (HEAD != null) {
         throw new Error('Duplicate HEAD entries in server response')
@@ -34,8 +33,8 @@ export async function fetchServerRefInfo(url: string): Promise<ServerRefInfo> {
       }
     } else if (ref.startsWith(REFS_HEADS)) {
       branches.push({ name: ref.slice(REFS_HEADS.length), oid })
-    } else if (mat = ref.match(/^refs\/tags\/([^]+)$/)) {
-      tags.push({ name: mat[0]!, oid })
+    } else if (ref.startsWith(REFS_TAGS) && !ref.endsWith('^{}')) {
+      tags.push({ name: ref.slice(REFS_TAGS.length), oid })
     }
   })
 
