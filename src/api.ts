@@ -33,7 +33,7 @@ export async function fetchServerRefInfo(url: string): Promise<ServerRefInfo> {
       }
     } else if (ref.startsWith(REFS_HEADS)) {
       branches.push({ name: ref.slice(REFS_HEADS.length), oid })
-    } else if (ref.startsWith(REFS_TAGS) && !ref.endsWith('^{}')) {
+    } else if (ref.startsWith(REFS_TAGS)) {
       tags.push({ name: ref.slice(REFS_TAGS.length), oid })
     }
   })
