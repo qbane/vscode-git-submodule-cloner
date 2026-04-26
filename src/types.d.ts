@@ -1,7 +1,8 @@
 import { Uri, QuickPickItem } from 'vscode'
 
 export interface QuickPickItemSubmod extends QuickPickItem {
-  // have this submodule been checked out from gitdir? always true if in out-of-tree mode
+  // has this submodule been checked out from gitdir?
+  // is always true if in out-of-tree mode because the submodule will be self-contained
   isCheckedOut: boolean | undefined
   commitHash?: string
   url: string
