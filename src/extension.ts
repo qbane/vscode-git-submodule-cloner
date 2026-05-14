@@ -4,7 +4,6 @@ import git from 'isomorphic-git'
 import http from '$isogit-http'
 import path from '$node-path'
 import { createIsoGitAsyncFs, exists } from './fs'
-import { type GitSubmoduleSpec } from './gitmodules'
 import { hexToAscii, textEncode } from './utils'
 import { createIsoGitProgressReporter, findSubmoduleOid, readGitModules, type IsoGitBaseOptions } from './gitops'
 import {
@@ -14,7 +13,7 @@ import {
   isWeb,
   getCorsProxyURL,
 } from './vsc-utils'
-import type { ExtensionExports, QuickPickItemSubmod } from './types'
+import type { GitSubmoduleSpec, ExtensionExports, QuickPickItemSubmod } from './types'
 import API from './api'
 
 function getScopedGlobalStorageUri(context: ExtensionContext, root: Uri): Uri {

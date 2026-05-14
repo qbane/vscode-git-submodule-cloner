@@ -3,10 +3,17 @@ import http from '$isogit-http'
 import type { ExtensionExports, GitCloneOptions, RefEntry, ServerRefInfo } from './types'
 import { getCorsProxyURL } from './vsc-utils'
 import { FileType, Uri, workspace } from 'vscode'
+import { parseGitModules } from './gitmodules'
 import { createIsoGitAsyncFs } from './fs'
 import { createIsoGitProgressReporter } from './gitops'
 import { getWorkspaceId } from './vendor/workspace-id'
 
+
+export async function listSubmodules(uri: Uri) {
+  const pathToGitModules = Uri.joinPath(uri, '.gitmodules')
+  const configContent = new TextDecoder().decode(await workspace.fs.readFile(pathToGitModules))
+  return parseGitModules(configContent)
+}
 
 export async function fetchServerRefInfo(url: string): Promise<ServerRefInfo> {
   const refs = await git.listServerRefs({
@@ -74,6 +81,7 @@ export async function gitClone(url: string, dest: Uri, ref?: string, options?: G
 
 const API: ExtensionExports = {
   getWorkspaceId,
+  listSubmodules,
   fetchServerRefInfo,
   gitClone,
 }

@@ -20,6 +20,18 @@ export interface ServerRefInfo {
   tags: RefEntry[]
 }
 
+export interface GitSubmoduleSpec {
+  name: string
+  nameRaw?: string
+  path: string
+  url: string
+}
+
+export interface GitModuleParseResult {
+  entries: GitSubmoduleSpec[]
+  errors: (Error & { name?: string })[]
+}
+
 export interface GitCloneOptions {
   shallow?: boolean
   onProgress: (info: { message: string, increment: number }) => void | Promise<void>
@@ -31,6 +43,10 @@ export interface ExtensionExports {
    * Should be stable across VS Code versions.
    * @see https://vscode-api.netlify.app/interfaces/vscode.extensioncontext#storageuri */
   getWorkspaceId(uri: Uri): string
+
+  /**
+   * List the submodules for the git repository root the `uri` points to. */
+  listSubmodules(uri: Uri): Promise<GitModuleParseResult>
 
   /**
    * List the branches and tags from the git server. */
