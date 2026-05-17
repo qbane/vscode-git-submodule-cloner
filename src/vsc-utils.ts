@@ -5,7 +5,7 @@ export function isWeb() {
 }
 
 export function folderIsGitHubRemoteRepo(uri: Uri) {
-  return uri.scheme === 'vscode-vfs' && uri.authority.match(/^github\+?/)
+  return uri.scheme === 'vscode-vfs' && !!uri.authority.match(/^github\+?/)
 }
 
 export function getCorsProxyURL() {

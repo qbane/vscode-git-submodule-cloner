@@ -110,7 +110,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
   async function mountAuxWorkspaceFolders(workspaceRoot: Uri, options?: { gitdir?: boolean }) {
     if (!workspace.workspaceFile && isWeb()) {
       const detail = 'This operation will create a new workspace in the current session. ' +
-        'On VS Code for the Web, workspaces are transient and may be lost if the page is closed. Proceed?'
+        'On VS Code for the Web, workspaces are transient and may be lost if the page is closed.\nProceed?'
       const resp = await window.showInformationMessage(
         'Creating a workspace', { modal: true, detail }, 'OK')
       if (resp !== 'OK') {
@@ -208,6 +208,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
     const wsf = workspace.workspaceFolders[0]!.uri
 
+    // in fresh instances of vscode.dev/github/xxx/yyy this is always false
     const shouldAutoMount = workspace.workspaceFile != null && await workspace.fs.stat(
       Uri.joinPath(getScopedGlobalStorageUri(context, wsf), 'submodules'))
         .then(() => true, () => false)
@@ -357,7 +358,7 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
 
   // TODO: factor it out so that it can be combined with git operations
   registerCommandWithActiveWSFolder(context, 'git-submodule-cloner.pick-submodules', async (extctx) => {
-    const { fsp, getDirSpec, isoGitBaseOpts } = extctx
+    const { fsp, getDirSpec, isCloningOutOfTree, isoGitBaseOpts } = extctx
 
     if (!(await fsp.stat('/workspace/.gitmodules').catch(() => null))) {
       window.showErrorMessage('No .gitmodules found')
@@ -369,6 +370,16 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         window.showErrorMessage(err.message)
         return []
       })
+
+    if (!(await exists(fsp, '/gitdir'))) {
+      if (isCloningOutOfTree) {
+        window.showWarningMessage(
+          '.git directory does not exist. You need to rebuild .git for the root repository at the first usage.\nRun the command "Initialize and checkout submodules" and try again.')
+      } else {
+        window.showErrorMessage('.git directory does not exist.')
+      }
+      return []
+    }
 
     const itemSource = Promise.all(
       submods.map(async mod => {
@@ -425,7 +436,8 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
         submods.reduce(async (pp, mod, idx) => {
           if (isDisposed) return
 
-          await pp
+          // FIXME: error handling
+          await pp.catch(() => {})
           const dirSpec = getDirSpec(mod)
           const statuses = await git.statusMatrix({
             ...isoGitBaseOpts,
