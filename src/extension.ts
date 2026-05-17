@@ -237,8 +237,15 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
       if (wsfuri.authority.length > 6 /* "github+"... */) {
         const decoded = hexToAscii(wsfuri.authority.slice(7))
         // TODO: figure out different types
-        const refInfo = JSON.parse(decoded) as { v: string, ref: { type: number, id: string } }
-        ref = refInfo.ref.id
+        const refInfo = JSON.parse(decoded) as { v: 1, ref: { type: number, id: string } }
+        if (refInfo.ref.type === 3) {
+          // for some reason isogit's clone fails if ref is in this form: clone succeeds but checkout fails
+          // ref = 'refs/pull/' + refInfo.ref.id + '/head'
+          window.showErrorMessage('Ref pointing to a PR is unsupported')
+          return
+        } else {
+          ref = refInfo.ref.id
+        }
       }
 
       await window.withProgress({
