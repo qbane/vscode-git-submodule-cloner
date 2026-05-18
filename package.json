@@ -43,10 +43,10 @@
   },
   "scripts": {
     "postinstall": "patch-package",
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run build",
     "tsc": "tsc --noEmit",
-    "build": "node bin/esbuild.mjs",
-    "compile": "npm run tsc && npm run build",
+    "esbuild": "node bin/esbuild.mjs",
+    "build": "npm run tsc && npm run esbuild",
     "watch": "node bin/esbuild.mjs --watch",
     "test": "true # (WIP)"
   },
