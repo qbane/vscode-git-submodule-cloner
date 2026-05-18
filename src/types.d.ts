@@ -34,7 +34,7 @@ export interface GitModuleParseResult {
 
 export interface GitCloneOptions {
   shallow?: boolean
-  onProgress: (info: { message: string, increment: number }) => void | Promise<void>
+  onProgress?: (info: { message: string, increment: number }) => void | Promise<void>
 }
 
 export interface ExtensionExports {

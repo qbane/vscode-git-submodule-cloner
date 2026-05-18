@@ -52,7 +52,7 @@ function makeContextFromWorkspaceFolder(context: ExtensionContext, root: Uri) {
   const fsp = createIsoGitAsyncFs(workspace.fs, { resolvePath })
 
   const isoGitBaseOpts: IsoGitBaseOptions = { fs: { promises: fsp }, http }
-  let corsProxy = getCorsProxyURL()
+  let corsProxy = getCorsProxyURL(root)
   if (corsProxy != null) {
     isoGitBaseOpts.corsProxy = corsProxy
   }

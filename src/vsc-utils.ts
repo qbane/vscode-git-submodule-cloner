@@ -8,11 +8,12 @@ export function folderIsGitHubRemoteRepo(uri: Uri) {
   return uri.scheme === 'vscode-vfs' && !!uri.authority.match(/^github\+?/)
 }
 
-export function getCorsProxyURL() {
+// FIXME: determine the sensible scope for getCorsProxyURL
+export function getCorsProxyURL(resource?: Uri) {
   let url
 
   if (isWeb()) {
-    const config = workspace.getConfiguration('git-submodule-cloner')
+    const config = workspace.getConfiguration('git-submodule-cloner', resource)
     url = config.get('corsProxyUrl', 'https://cors.isomorphic-git.org')
   }
 
