@@ -38,6 +38,8 @@ export interface GitCloneOptions {
 }
 
 export interface ExtensionExports {
+  storageUri: Uri
+
   /**
    * Get a hash value for the given URI which is a part of its extension storage URI.
    * Should be stable across VS Code versions.

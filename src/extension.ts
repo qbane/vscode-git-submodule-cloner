@@ -14,7 +14,7 @@ import {
   getCorsProxyURL,
 } from './vsc-utils'
 import type { GitSubmoduleSpec, ExtensionExports, QuickPickItemSubmod } from './types'
-import API from './api'
+import { API, getAPI } from './api'
 
 function getScopedGlobalStorageUri(context: ExtensionContext, root: Uri): Uri {
   if (!folderIsGitHubRemoteRepo(root)) {
@@ -506,5 +506,5 @@ export async function activate(context: ExtensionContext): Promise<ExtensionExpo
     return picked
   })
 
-  return API
+  return getAPI(context)
 }

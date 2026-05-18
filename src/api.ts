@@ -1,8 +1,8 @@
 import git from 'isomorphic-git'
 import http from '$isogit-http'
+import { FileType, Uri, workspace, type ExtensionContext } from 'vscode'
 import type { ExtensionExports, GitCloneOptions, RefEntry, ServerRefInfo } from './types'
 import { getCorsProxyURL } from './vsc-utils'
-import { FileType, Uri, workspace } from 'vscode'
 import { parseGitModules } from './gitmodules'
 import { createIsoGitAsyncFs } from './fs'
 import { createIsoGitProgressReporter } from './gitops'
@@ -79,11 +79,16 @@ export async function gitClone(url: string, dest: Uri, ref?: string, options?: G
   })
 }
 
-const API: ExtensionExports = {
+export const API = {
   getWorkspaceId,
   listSubmodules,
   fetchServerRefInfo,
   gitClone,
 }
 
-export default API
+export function getAPI(context: ExtensionContext): ExtensionExports {
+  return {
+    storageUri: context.globalStorageUri,
+    ...API,
+  }
+}
